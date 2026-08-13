@@ -208,7 +208,8 @@ class ConfigTestRunner:
 
     async def _test_llm(self, run: TestRun, catalog: dict[str, Any]) -> None:
         from deeptutor.services.llm import clear_llm_config_cache, get_token_limit_kwargs
-        from deeptutor.services.llm import complete as llm_complete
+        from deeptutor.services.llm import clean_thinking_tags
+        from deeptutor.services.llm import stream as llm_stream
         from deeptutor.services.llm.config import LLMConfig
 
         clear_llm_config_cache()
@@ -225,6 +226,7 @@ class ConfigTestRunner:
             api_version=resolved.api_version,
             extra_headers=resolved.extra_headers,
             reasoning_effort=resolved.reasoning_effort,
+            context_window=resolved.context_window,
         )
         run.emit(
             "info", f"Resolved model `{llm_config.model}` with binding `{llm_config.binding}`."
@@ -244,7 +246,8 @@ class ConfigTestRunner:
         run.emit("info", f"Token options: {json.dumps(token_kwargs)}")
         if llm_config.reasoning_effort:
             run.emit("info", f"Reasoning effort: {llm_config.reasoning_effort}")
-        response = await llm_complete(
+        chunks: list[str] = []
+        async for chunk in llm_stream(
             model=llm_config.model,
             prompt="Say 'OK' and identify the model you are using.",
             system_prompt="Respond briefly but include your model identity if possible.",
@@ -256,8 +259,10 @@ class ConfigTestRunner:
             extra_headers=llm_config.extra_headers,
             reasoning_effort=llm_config.reasoning_effort,
             **token_kwargs,
-        )
-        snippet = (response or "").strip()
+        ):
+            chunks.append(chunk)
+        response = clean_thinking_tags("".join(chunks))
+        snippet = response.strip()
         run.emit("response", "Received LLM response.", snippet=snippet[:400])
         if not snippet:
             raise ValueError("LLM returned an empty response.")

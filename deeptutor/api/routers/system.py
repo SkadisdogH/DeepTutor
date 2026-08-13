@@ -14,8 +14,9 @@ from deeptutor.multi_user.context import get_current_user
 from deeptutor.runtime import memory_probe
 from deeptutor.services.config import resolve_search_runtime_config
 from deeptutor.services.embedding import get_embedding_client, get_embedding_config
-from deeptutor.services.llm import complete as llm_complete
 from deeptutor.services.llm import get_llm_config, get_token_limit_kwargs
+from deeptutor.services.llm import clean_thinking_tags
+from deeptutor.services.llm import stream as llm_stream
 from deeptutor.services.search import web_search
 
 router = APIRouter()
@@ -230,7 +231,8 @@ async def test_llm_connection():
         test_prompt = "Say 'OK' to confirm you are working. Do not produce long output."
         token_kwargs = get_token_limit_kwargs(model, max_tokens=200)
 
-        response = await llm_complete(
+        chunks: list[str] = []
+        async for chunk in llm_stream(
             model=model,
             prompt=test_prompt,
             system_prompt="You are a helpful assistant. Respond briefly.",
@@ -239,7 +241,9 @@ async def test_llm_connection():
             base_url=base_url,
             temperature=0.1,
             **token_kwargs,
-        )
+        ):
+            chunks.append(chunk)
+        response = clean_thinking_tags("".join(chunks))
 
         response_time = (time.time() - start_time) * 1000
 

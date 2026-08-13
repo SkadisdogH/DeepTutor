@@ -54,6 +54,7 @@ _CONDITIONAL_MOUNT_FLAGS: dict[str, str] = {
     "load_tools": "has_deferred_tools",
     "exec": "has_exec",
     "code_execution": "has_code",
+    "math_symbolic": "has_code",
 }
 
 # Built-ins that survive an exclusive knowledge capability when other KBs are

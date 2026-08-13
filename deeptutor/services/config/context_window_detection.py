@@ -204,6 +204,15 @@ async def detect_context_window(
             detected_at=detected_at,
         )
 
+    configured_window = coerce_positive_int(llm_config.context_window)
+    if configured_window is not None:
+        return ContextWindowDetectionResult(
+            context_window=configured_window,
+            source="configured",
+            detail="Using the context window configured for this model in the model catalog.",
+            detected_at=detected_at,
+        )
+
     fallback = default_context_window_for_model(
         model=llm_config.model,
         max_tokens=llm_config.max_tokens,

@@ -214,10 +214,29 @@ def _build_copilot_adapter(config: LLMClientConfig, spec: Any) -> Any:
     return _ProviderOpenAIAdapter(copilot_provider)
 
 
+def _build_openai_compat_adapter(config: LLMClientConfig, spec: Any) -> Any | None:
+    # Azure uses the raw AsyncAzureOpenAI client path in _build_openai_client
+    # (it needs api_version), so keep Azure out of the native provider adapter.
+    if config.binding == "azure_openai" or (config.binding == "openai" and config.api_version):
+        return None
+    from deeptutor.services.llm.provider_core.openai_compat_provider import OpenAICompatProvider
+
+    provider = OpenAICompatProvider(
+        api_key=config.api_key or None,
+        api_base=config.base_url or None,
+        default_model=config.model or "gpt-4o",
+        extra_headers=config.extra_headers or None,
+        spec=spec,
+        provider_name=getattr(spec, "name", None) or config.binding,
+    )
+    return _ProviderOpenAIAdapter(provider)
+
+
 _NATIVE_ADAPTER_BUILDERS: dict[str, Callable[[LLMClientConfig, Any], Any]] = {
     "anthropic": _build_anthropic_adapter,
     "openai_codex": _build_codex_adapter,
     "github_copilot": _build_copilot_adapter,
+    "openai_compat": _build_openai_compat_adapter,
 }
 
 

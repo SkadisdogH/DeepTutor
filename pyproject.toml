@@ -72,6 +72,9 @@ dependencies = [
     # deeptutor.runtime.memory_probe imports it lazily and falls back to /proc,
     # so a missing wheel costs the settings strip, not the app.
     "psutil>=5.9.0,<8.0.0",
+    # Symbolic math for the math_symbolic tool. Pure Python, kept in core so the
+    # math-specialized fork can guarantee it is available to the sandbox.
+    "sympy>=1.12,<2.0.0",
 ]
 
 [project.scripts]

@@ -14,6 +14,7 @@ from deeptutor.capabilities.subagent import SUBAGENT_TOOL_TYPES
 from deeptutor.core.tool_protocol import BaseTool, ToolDefinition, ToolParameter, ToolResult
 from deeptutor.knowledge.manifest import KB_FILES_DEFAULT_LIMIT, KB_FILES_MAX_LIMIT
 from deeptutor.tools.exec_tool import ExecTool
+from deeptutor.tools.math_symbolic import MathSymbolicTool
 from deeptutor.tools.media_gen_tool import ImagegenTool, VideogenTool
 from deeptutor.tools.partner_memory import (
     PARTNER_BUILTIN_TOOL_NAMES,
@@ -1565,6 +1566,7 @@ BUILTIN_TOOL_TYPES: tuple[type[BaseTool], ...] = (
     KbFilesTool,
     WebSearchTool,
     CodeExecutionTool,
+    MathSymbolicTool,
     ReasonTool,
     PaperSearchToolWrapper,
     ReadSourceTool,
@@ -1648,6 +1650,7 @@ CONFIGURABLE_BUILTIN_TOOL_NAMES: tuple[str, ...] = (
     "rag",
     "kb_files",
     "code_execution",
+    "math_symbolic",
     "read_source",
     "read_memory",
     "write_memory",
@@ -1689,6 +1692,7 @@ __all__ = [
     "ImagegenTool",
     "VideogenTool",
     "ListNotebookTool",
+    "MathSymbolicTool",
     "PaperSearchToolWrapper",
     "PartnerMemorizeTool",
     "PartnerReadTool",

@@ -319,19 +319,13 @@ class OpenAICompatProvider(LLMProvider):
         model: str | None,
         reasoning_effort: str | None,
     ) -> bool:
+        # Prefer the OpenAI Responses API for every OpenAI-compatible endpoint,
+        # regardless of base_url. Modern gateways (third-party relays included)
+        # increasingly expose ``POST /v1/responses``; when an endpoint does not,
+        # the circuit breaker below plus the chat-completions fallback in
+        # ``chat`` / ``chat_stream`` keep the older protocol working.
         spec = self._spec
-        if spec and spec.name not in {"openai", "github_copilot"}:
-            return False
-        if spec is None or spec.name != "github_copilot":
-            if not _is_direct_openai_base(self._effective_base):
-                return False
-
-        model_name = (model or self.default_model).lower()
-        wants_reasoning = bool(reasoning_effort and reasoning_effort.lower() != "none")
-        wants_responses = wants_reasoning or any(
-            token in model_name for token in ("gpt-5", "o1", "o3", "o4")
-        )
-        if not wants_responses:
+        if spec is not None and spec.backend not in {"openai_compat"}:
             return False
 
         circuit_key = _responses_circuit_key(model, self.default_model, reasoning_effort)
@@ -360,7 +354,7 @@ class OpenAICompatProvider(LLMProvider):
         status_code = getattr(exc, "status_code", None)
         if status_code is None and response is not None:
             status_code = getattr(response, "status_code", None)
-        if status_code not in {400, 404, 422}:
+        if status_code not in {400, 404, 405, 422, 501}:
             return False
 
         body = (
@@ -381,6 +375,9 @@ class OpenAICompatProvider(LLMProvider):
                 "unrecognized request argument",
                 "unsupported",
                 "not supported",
+                "not found",
+                "does not exist",
+                "endpoint",
             )
         )
 
@@ -687,13 +684,36 @@ class OpenAICompatProvider(LLMProvider):
                     )
                     body.update(adapt_chat_kwargs_to_responses(extra_kwargs))
                     result = parse_response_output(await self._client.responses.create(**body))
+                    # Some OpenAI-compatible gateways (e.g. cf.api.fan) return
+                    # HTTP 200 with an empty ``output`` list for non-streaming
+                    # Responses calls while streaming works normally. When the
+                    # non-streaming result is empty and carries no tool calls,
+                    # transparently re-issue the same request as streaming.
+                    if (
+                        not result.content
+                        and not result.has_tool_calls
+                        and result.finish_reason != "error"
+                    ):
+                        return await self.chat_stream(
+                            messages,
+                            tools,
+                            model,
+                            max_tokens,
+                            temperature,
+                            reasoning_effort,
+                            tool_choice,
+                            **extra_kwargs,
+                        )
                     self._record_responses_success(model, reasoning_effort)
                     return result
                 except Exception as responses_error:
                     if self._spec and self._spec.name == "github_copilot":
                         raise
-                    if not self._should_fallback_from_responses_error(responses_error):
-                        raise
+                    # Prefer Responses API, but fall back to chat/completions on
+                    # ANY Responses failure (404/405/422/5xx, model_not_found,
+                    # tool-call routing errors on third-party gateways, …). The
+                    # circuit breaker records the failure so a consistently
+                    # broken Responses route is probed less often.
                     self._record_responses_failure(model, reasoning_effort)
 
             request_kwargs = self._build_kwargs(
@@ -805,8 +825,11 @@ class OpenAICompatProvider(LLMProvider):
                 except Exception as responses_error:
                     if self._spec and self._spec.name == "github_copilot":
                         raise
-                    if not self._should_fallback_from_responses_error(responses_error):
-                        raise
+                    # Prefer Responses API, but fall back to chat/completions on
+                    # ANY Responses failure (404/405/422/5xx, model_not_found,
+                    # tool-call routing errors on third-party gateways, …). The
+                    # circuit breaker records the failure so a consistently
+                    # broken Responses route is probed less often.
                     self._record_responses_failure(model, reasoning_effort)
 
             request_kwargs["stream"] = True
