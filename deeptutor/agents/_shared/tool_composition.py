@@ -46,6 +46,7 @@ AUTO_MOUNTED_TOOLS: frozenset[str] = frozenset(CONFIGURABLE_BUILTIN_TOOL_NAMES)
 _CONDITIONAL_MOUNT_FLAGS: dict[str, str] = {
     "rag": "has_kb",
     "kb_files": "has_kb",
+    "add_to_kb": "has_kb",
     "read_source": "has_sources",
     "read_memory": "has_memory",
     "list_notebook": "has_notebooks",
@@ -59,7 +60,7 @@ _CONDITIONAL_MOUNT_FLAGS: dict[str, str] = {
 
 # Built-ins that survive an exclusive knowledge capability when other KBs are
 # co-selected: retrieval over them, and enumeration of what they hold.
-_KB_COEXISTING_TOOLS: tuple[str, ...] = ("rag", "kb_files")
+_KB_COEXISTING_TOOLS: tuple[str, ...] = ("rag", "kb_files", "add_to_kb")
 
 
 def default_optional_tools(excluded: Iterable[str] = ()) -> list[str]:

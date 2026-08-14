@@ -232,6 +232,81 @@ def _kb_files_limit(raw: Any) -> int:
     return min(requested, KB_FILES_MAX_LIMIT)
 
 
+class AddToKbTool(_PromptHintsMixin, BaseTool):
+    """Add one or more downloaded files into a knowledge base.
+
+    ``rag``/``kb_files`` only read a KB; the agent could never persist content
+    it had just fetched into a KB without the user doing it by hand in the
+    knowledge center. This tool stages + indexes local files through the same
+    canonical path as the upload UI (``DocumentAdder``).
+    """
+
+    def get_definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name="add_to_kb",
+            description=(
+                "Add one or more local files into one of the knowledge bases the "
+                "user has access to, so they become searchable by `rag`. Use this "
+                "when the user asks to save / put / add a downloaded or existing "
+                "file into a knowledge base. Pass the actual local file path(s) "
+                "in the workspace; the files are copied into the KB and indexed. "
+                "Requires the knowledge base to already exist."
+            ),
+            parameters=[
+                ToolParameter(
+                    name="kb_name",
+                    type="string",
+                    description="Name of the knowledge base to add files into.",
+                ),
+                ToolParameter(
+                    name="file_paths",
+                    type="array",
+                    description=(
+                        "One or more local file paths to add. Each must already "
+                        "exist in the workspace (a downloaded file's path). "
+                        "URLs are not accepted — download the file first."
+                    ),
+                    items={"type": "string"},
+                ),
+            ],
+        )
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        from deeptutor.tools.add_document_tool import add_documents_to_kb
+
+        kb_name = str(kwargs.get("kb_name") or "").strip()
+        raw_paths = kwargs.get("file_paths") or kwargs.get("file_path") or []
+        if isinstance(raw_paths, str):
+            raw_paths = [raw_paths]
+        file_paths = [str(p) for p in raw_paths]
+
+        try:
+            result = await add_documents_to_kb(kb_name, file_paths)
+        except Exception as exc:
+            return ToolResult(
+                content=f"Failed to add file(s) to knowledge base: {exc}",
+                success=False,
+                metadata={"kb_name": kb_name},
+            )
+
+        count = result["processed_count"]
+        names = ", ".join(result["added_files"])
+        if count <= 0:
+            message = (
+                f"No new files were added to knowledge base '{result['kb_name']}' "
+                f"(files already present or nothing to process): {names}."
+            )
+        else:
+            message = (
+                f"Successfully added {count} file(s) to knowledge base "
+                f"'{result['kb_name']}': {names}. They are now searchable with `rag`."
+            )
+        return ToolResult(
+            content=message,
+            metadata=result,
+        )
+
+
 class WebSearchTool(_PromptHintsMixin, BaseTool):
     def get_definition(self) -> ToolDefinition:
         return ToolDefinition(
@@ -1564,6 +1639,7 @@ BUILTIN_TOOL_TYPES: tuple[type[BaseTool], ...] = (
     BrainstormTool,
     RAGTool,
     KbFilesTool,
+    AddToKbTool,
     WebSearchTool,
     CodeExecutionTool,
     MathSymbolicTool,
@@ -1649,6 +1725,7 @@ USER_TOGGLEABLE_TOOL_NAMES: tuple[str, ...] = (
 CONFIGURABLE_BUILTIN_TOOL_NAMES: tuple[str, ...] = (
     "rag",
     "kb_files",
+    "add_to_kb",
     "code_execution",
     "math_symbolic",
     "read_source",

@@ -191,7 +191,19 @@ def _is_disallowed_host(host: str) -> bool:
     return False
 
 
+# Clash and other TUN proxies in fake-ip mode hand out addresses in the
+# 198.18.0.0/15 range (RFC 2544 benchmarking block) for proxied public
+# domains: the app resolves any domain to a fake 198.18.x.x address and the
+# proxy maps the connection back to the real domain and forwards it. Blocking
+# this range would make web_fetch refuse every public domain on such setups.
+# It is safe to allow: nothing real lives in 198.18.0.0/15, and in fake-ip
+# mode a connection there is just re-entered into the local proxy.
+_CLASH_FAKE_IP_NET = ipaddress.ip_network("198.18.0.0/15")
+
+
 def _is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(ip, ipaddress.IPv4Address) and ip in _CLASH_FAKE_IP_NET:
+        return False
     return (
         ip.is_private
         or ip.is_loopback

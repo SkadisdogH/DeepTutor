@@ -36,8 +36,18 @@ export function convertLatexDelimiters(content: string): string {
 
   // Convert \(...\) to $...$ (inline math).
   // Be careful not to match escaped parentheses in other contexts
-  result = result.replace(/\\\(([\s\S]*?)\\\)/g, (_match, expr) => {
-    return ` $${expr}$ `;
+  result = result.replace(/\\\(([\s\S]*?)\\\)/g, (match, expr, offset, full) => {
+    // Surround the math with spaces only when the adjacent char would otherwise
+    // glue it to normal text. Skip the space next to a markdown emphasis
+    // delimiter (`*`, `_`, `~`, backtick) so that `**...\(\mathbb F_p\)**`
+    // stays a valid bold/italic span — a trailing space before the closing
+    // `**` breaks CommonMark bold/italic and the asterisks show literally.
+    const before = offset > 0 ? full[offset - 1] : "";
+    const after = offset + match.length < full.length ? full[offset + match.length] : "";
+    const emphasis = /[*_~`]/;
+    const needLead = before !== "" && !/\s/.test(before) && !emphasis.test(before);
+    const needTrail = after !== "" && !/\s/.test(after) && !emphasis.test(after);
+    return `${needLead ? " " : ""}$${expr}$${needTrail ? " " : ""}`;
   });
 
   // Also handle cases where LaTeX is directly in the text without proper delimiters

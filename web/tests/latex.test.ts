@@ -24,6 +24,21 @@ test("convertLatexDelimiters: \\\\(...\\\\) → inline $...$", () => {
   assert.ok(result.includes("$x = 2$"));
 });
 
+test("convertLatexDelimiters: keeps inline math adjacent to bold/italic delimiters", () => {
+  // Regression: a trailing space before the closing ** (or *) would make the
+  // span no longer valid markdown, so the asterisks showed literally.
+  const bold = convertLatexDelimiters("**有限域 \\(\\mathbb F_p\\)**");
+  assert.ok(bold.endsWith("$\\mathbb F_p$**"), "no space before closing **");
+  assert.ok(!bold.includes("** "), "bold span must not gain a trailing space");
+
+  const italic = convertLatexDelimiters("*x \\(a=b\\)*");
+  assert.ok(italic.endsWith("$a=b$*"), "no space before closing *");
+
+  // Normal inline math still keeps its surrounding spaces.
+  const normal = convertLatexDelimiters("Solve \\(x = 2\\) now");
+  assert.equal(normal, "Solve $x = 2$ now");
+});
+
 test("convertLatexDelimiters: strips \\\\(\\\\) inside $$...$$", () => {
   const input = "$$\\(x^2\\)$$";
   const result = convertLatexDelimiters(input);
