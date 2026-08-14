@@ -580,6 +580,24 @@ export default function ChatPage() {
     prefillInputRef.current?.(text);
   }, []);
 
+  // 「加入对话」：消息选区工具条（MessageSelectionToolbar）把选中的引用文本通过
+  // window 事件送回这里，预填进输入框（用户确认后再发送）。
+  useEffect(() => {
+    const onAddToConversation = (e: Event) => {
+      const text = (e as CustomEvent<string>).detail;
+      if (typeof text === "string" && text) handlePrefillComposer(text);
+    };
+    window.addEventListener(
+      "dt:add-to-conversation",
+      onAddToConversation as EventListener,
+    );
+    return () =>
+      window.removeEventListener(
+        "dt:add-to-conversation",
+        onAddToConversation as EventListener,
+      );
+  }, [handlePrefillComposer]);
+
   // A clickable node inside an inlined visualization SVG (data-prompt) — and the
   // html widget's sendPrompt bridge — dispatch this window event; mirror it into
   // the composer as a prefilled follow-up (user confirms before sending).

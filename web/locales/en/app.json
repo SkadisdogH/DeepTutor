@@ -2928,5 +2928,7 @@
   "Container available": "Container available",
   "{{used}} · {{percent}}% of {{total}}": "{{used}} · {{percent}}% of {{total}}",
   "(backend only)": "(backend only)",
-  "Only the backend and its own children. Start DeepTutor through the launcher to include the web server.": "Only the backend and its own children. Start DeepTutor through the launcher to include the web server."
+  "Only the backend and its own children. Start DeepTutor through the launcher to include the web server.": "Only the backend and its own children. Start DeepTutor through the launcher to include the web server.",
+  "Add to conversation": "Add to conversation",
+  "Message selection actions": "Message selection actions"
 }

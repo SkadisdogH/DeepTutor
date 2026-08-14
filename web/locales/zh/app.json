@@ -2928,5 +2928,7 @@
   "Container available": "容器可用",
   "{{used}} · {{percent}}% of {{total}}": "{{used}} · 占 {{total}} 的 {{percent}}%",
   "(backend only)": "（仅后端）",
-  "Only the backend and its own children. Start DeepTutor through the launcher to include the web server.": "仅统计后端及其子进程。通过 DeepTutor 启动器运行才能把前端服务一起算进来。"
+  "Only the backend and its own children. Start DeepTutor through the launcher to include the web server.": "仅统计后端及其子进程。通过 DeepTutor 启动器运行才能把前端服务一起算进来。",
+  "Add to conversation": "加入对话",
+  "Message selection actions": "消息选区操作"
 }
