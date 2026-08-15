@@ -1033,7 +1033,7 @@ const UserMessage = memo(function UserMessage({
   ];
 
   return (
-    <div key={`${msg.role}-${index}`} data-message-selectable="true" className="group flex justify-end">
+    <div key={`${msg.role}-${index}`} data-message-selectable="true" data-message-role={msg.role} data-message-index={index} className="group flex justify-end">
       {/* ``data-turn-key`` is the scroll target the turn navigator jumps
           to; ``data-turn-bubble`` is what it flashes on arrival. Both keys
           come from ``turnAnchorKey`` so the rail and the transcript can
@@ -1410,7 +1410,7 @@ export const ChatMessageList = memo(function ChatMessageList({
         })();
 
         return (
-          <div key={`${msg.role}-${i}`} data-message-selectable="true" className="w-full">
+          <div key={`${msg.role}-${i}`} data-message-selectable="true" data-message-role={msg.role} data-message-index={i} className="w-full">
             <InlineFileCardProvider
               attachments={msg.attachments ?? []}
               events={msg.events}

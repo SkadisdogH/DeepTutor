@@ -2930,5 +2930,9 @@
   "(backend only)": "（仅后端）",
   "Only the backend and its own children. Start DeepTutor through the launcher to include the web server.": "仅统计后端及其子进程。通过 DeepTutor 启动器运行才能把前端服务一起算进来。",
   "Add to conversation": "加入对话",
-  "Message selection actions": "消息选区操作"
+  "Message selection actions": "消息选区操作",
+  "Quote source AI": "上方的 AI 回复",
+  "Quote source user": "你上方的消息",
+  "Quote intro": "【引用上文 · 来自{{source}}{{where}}】以下内容引自上方消息，请结合该消息的完整上下文来理解和继续：",
+  "Quote where": "第 {{n}} 条消息"
 }

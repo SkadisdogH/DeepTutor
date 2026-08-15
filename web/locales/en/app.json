@@ -2930,5 +2930,9 @@
   "(backend only)": "(backend only)",
   "Only the backend and its own children. Start DeepTutor through the launcher to include the web server.": "Only the backend and its own children. Start DeepTutor through the launcher to include the web server.",
   "Add to conversation": "Add to conversation",
-  "Message selection actions": "Message selection actions"
+  "Message selection actions": "Message selection actions",
+  "Quote source AI": "the AI reply above",
+  "Quote source user": "your message above",
+  "Quote intro": "[Quoted from above - from {{source}}{{where}}] The following is quoted from an earlier message; please understand it in the full context of that message and continue:",
+  "Quote where": "message #{{n}}"
 }

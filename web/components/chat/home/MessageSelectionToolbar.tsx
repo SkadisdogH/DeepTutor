@@ -23,16 +23,35 @@ import { Check, Copy, MessageSquarePlus } from "lucide-react";
  */
 export const ADD_TO_CONVERSATION_EVENT = "dt:add-to-conversation";
 
-function quoteSelection(text: string): string {
+function blockquote(text: string): string {
   return text
     .split("\n")
     .map((line) => (line.trim() ? `> ${line}` : ">"))
     .join("\n");
 }
 
+function quoteWithSource(
+  text: string,
+  sourceRole: string | null,
+  sourceIndex: number | null,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): string {
+  const sourceLabel =
+    sourceRole === "user" ? t("Quote source user") : t("Quote source AI");
+  const whereClause =
+    sourceIndex != null ? ` (${t("Quote where", { n: sourceIndex + 1 })})` : "";
+  const intro = `${t("Quote intro", { source: sourceLabel, where: whereClause })}`;
+  return `${intro}\n\n${blockquote(text)}`;
+}
+
 export function MessageSelectionToolbar() {
   const { t } = useTranslation();
-  const [sel, setSel] = useState<{ text: string; rect: DOMRect } | null>(null);
+  const [sel, setSel] = useState<{
+    text: string;
+    rect: DOMRect;
+    sourceRole: string | null;
+    sourceIndex: number | null;
+  } | null>(null);
   const [copied, setCopied] = useState(false);
   const barRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -76,8 +95,24 @@ export function MessageSelectionToolbar() {
       hide();
       return;
     }
+    // 出处：读取选区所在消息气泡的 role 与序号，方便模型定位到原消息。
+    const anchor =
+      selection.anchorNode instanceof Element
+        ? selection.anchorNode
+        : selection.anchorNode?.parentElement ?? null;
+    const bubble = anchor?.closest?.("[data-message-selectable]") ?? null;
+    const rawIndex = bubble?.getAttribute("data-message-index");
+    const sourceIndex =
+      rawIndex != null && !Number.isNaN(Number(rawIndex))
+        ? Number(rawIndex)
+        : null;
     setCopied(false);
-    setSel({ text, rect: range.getBoundingClientRect() });
+    setSel({
+      text,
+      rect: range.getBoundingClientRect(),
+      sourceRole: bubble?.getAttribute("data-message-role") ?? null,
+      sourceIndex,
+    });
   }, [hide]);
 
   useEffect(() => {
@@ -117,11 +152,11 @@ export function MessageSelectionToolbar() {
     if (!sel) return;
     window.dispatchEvent(
       new CustomEvent<string>(ADD_TO_CONVERSATION_EVENT, {
-        detail: quoteSelection(sel.text),
+        detail: quoteWithSource(sel.text, sel.sourceRole, sel.sourceIndex, t),
       }),
     );
     hide();
-  }, [sel, hide]);
+  }, [sel, hide, t]);
 
   // 把工具条定位在选区上方（空间不足时放到选区下方），并夹在视口内。
   // 尺寸用近似值（工具条只有“复制 / 加入对话”两个按钮），在渲染期直接算出，
