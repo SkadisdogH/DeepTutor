@@ -24,6 +24,7 @@ import {
 import { Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import MarkdownRenderer from "@/components/common/MarkdownRenderer";
+import OverlayScrollbar from "@/components/chat/home/OverlayScrollbar";
 import FollowupChatComposer from "@/components/quiz/FollowupChatComposer";
 import {
   AskUserOptions,
@@ -154,13 +155,14 @@ export default function QuizFollowupTabBody({
           ``overflow-anchor: none`` + ``scroll-behavior: auto`` rule
           (see app/globals.css) so the manual pin isn't fought by the
           browser's built-in scroll anchoring. */}
-      <div
-        ref={scrollerRef}
-        onScroll={handleScroll}
-        data-chat-scroll-root="true"
-        className="flex-1 overflow-y-auto px-4 py-3"
-      >
-        <div className="mx-auto flex max-w-[640px] flex-col gap-3">
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollerRef}
+          onScroll={handleScroll}
+          data-chat-scroll-root="true"
+          className="h-full overflow-y-auto px-4 py-3"
+        >
+          <div className="mx-auto flex max-w-[640px] flex-col gap-3">
           <div className="rounded-md border border-[var(--border)]/70 bg-[var(--background)]/70 px-3 py-2">
             <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
               {t("Question")}
@@ -284,6 +286,8 @@ export default function QuizFollowupTabBody({
             <div ref={threadEndRef} />
           </div>
         </div>
+        </div>
+        <OverlayScrollbar scrollRef={scrollerRef} />
       </div>
 
       {/* Composer — the same ChatComposer used on the main chat page,

@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import AssistantResponse from "@/components/common/AssistantResponse";
+import OverlayScrollbar from "@/components/chat/home/OverlayScrollbar";
 import { useAppShell } from "@/context/AppShellContext";
 import { getSession } from "@/lib/session-api";
 import {
@@ -439,11 +440,12 @@ export default function BookChatPanel({
         </button>
       </header>
 
-      <div
-        ref={scrollerRef}
-        data-chat-scroll-root="true"
-        className="flex-1 overflow-y-auto px-4 py-3"
-      >
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollerRef}
+          data-chat-scroll-root="true"
+          className="h-full overflow-y-auto px-4 py-3"
+        >
         {messages.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--background)]/50 p-4 text-xs leading-5 text-[var(--muted-foreground)]">
             {t(
@@ -502,6 +504,8 @@ export default function BookChatPanel({
             ))}
           </div>
         )}
+        </div>
+        <OverlayScrollbar scrollRef={scrollerRef} />
       </div>
 
       <form

@@ -155,8 +155,9 @@
 
   * {
     @apply border-[color:var(--border)];
-    scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
+    scrollbar-width: auto;
+    /* 硬编码颜色：避免 var() 在 Firefox scrollbar-color 里解析失败导致回退成浅色 */
+    scrollbar-color: #6b6b6b transparent;
   }
 
   html,
@@ -212,23 +213,36 @@
   }
 }
 
-/* ─── Scrollbar ─── */
+/* ─── Scrollbar ───
+   用标准 scrollbar-color 统一控制滑块颜色。它没有 :hover/:active 等“状态”行为，
+   静止、悬停、点击拖拽都是同一深色——这正好规避 Chromium 里
+   ::-webkit-scrollbar-thumb 的拖拽态会回落成原生浅色滚动条的问题。
+
+   宽度仍用 ::-webkit-scrollbar 控制（Firefox 走 scrollbar-width: auto）。 */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 12px;
+  height: 12px;
 }
 
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 
-::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 3px;
+/* 聊天/流式滚动容器：原生滚动条改为隐藏，统一由 OverlayScrollbar 渲染
+   常驻深色滑块（见 components/chat/home/OverlayScrollbar.tsx）。
+   原因（FF153 + Linux GTK 实测）：auto 模式下按住滑块拖拽时 GTK 主题会把
+   滑块重绘成系统浅色（rgb(227,227,227)），scrollbar-color 在按压态失效；
+   Chromium 的 scrollbar-color 按压态也会变浅（107→150）。隐藏原生条 +
+   自定义滑块后，静止/悬停/拖拽都是同一深色 #6b6b6b，三个浏览器一致。 */
+[data-chat-scroll-root="true"] {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  scrollbar-color: #6b6b6b transparent;
 }
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--muted-foreground);
+[data-chat-scroll-root="true"]::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 /* ─── Streaming surfaces ───

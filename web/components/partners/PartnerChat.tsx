@@ -34,6 +34,7 @@ import {
   shouldAppendEventContent,
 } from "@/lib/stream";
 import { useChatAutoScroll } from "@/hooks/useChatAutoScroll";
+import OverlayScrollbar from "@/components/chat/home/OverlayScrollbar";
 import { AssistantActivity } from "@/components/chat/home/TracePanels";
 import {
   PartnerComposer,
@@ -634,12 +635,13 @@ export default function PartnerChat({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div
-        ref={scrollRef}
-        data-chat-scroll-root="true"
-        onScroll={handleScroll}
-        className="min-h-0 flex-1 overflow-y-auto px-1 py-4"
-      >
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          data-chat-scroll-root="true"
+          onScroll={handleScroll}
+          className="h-full overflow-y-auto px-1 py-4"
+        >
         {messages.length === 0 && !draft ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
             <PartnerAvatar
@@ -732,6 +734,8 @@ export default function PartnerChat({
             )}
           </div>
         )}
+        </div>
+        <OverlayScrollbar scrollRef={scrollRef} />
       </div>
 
       <div className="mx-auto w-full max-w-2xl px-1 pb-4">

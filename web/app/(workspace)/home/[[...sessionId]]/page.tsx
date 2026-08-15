@@ -37,6 +37,7 @@ import ChatComposer from "@/components/chat/home/ChatComposer";
 import type { ContextBudget } from "@/components/chat/home/ContextBudgetChip";
 import { ChatMessageList } from "@/components/chat/home/ChatMessages";
 import { TurnNavigator } from "@/components/chat/home/TurnNavigator";
+import OverlayScrollbar from "@/components/chat/home/OverlayScrollbar";
 import SessionLoadingView from "@/components/chat/home/SessionLoadingView";
 // Imported eagerly so the drawer shell is always mounted off-screen —
 // clicking a chip becomes a single CSS class flip, no chunk fetch + double
@@ -2004,12 +2005,11 @@ export default function ChatPage() {
                   data-chat-scroll-root="true"
                   onScroll={handleMessagesScroll}
                   onClick={handleMessagesClick}
-                  // `both-edges` reserves the scrollbar gutter on both sides so
-                  // the inner mx-auto column centers on the same axis as the
-                  // header and composer (siblings outside this scrollport) on
-                  // classic-scrollbar platforms; plain `stable` would shift it
-                  // ~half a scrollbar-width left of them.
-                  className={`w-full flex-1 min-h-0 overflow-y-auto [scrollbar-gutter:stable_both-edges] ${hasMessages ? "pt-6" : "pt-2 pb-6"}`}
+                  // Native scrollbars are hidden on `data-chat-scroll-root`
+                  // (globals.css) and replaced by the custom OverlayScrollbar,
+                  // so no gutter is reserved on any platform; the inner column
+                  // centers on the same axis as the header and composer.
+                  className={`w-full flex-1 min-h-0 overflow-y-auto ${hasMessages ? "pt-6" : "pt-2 pb-6"}`}
                   style={
                     hasMessages
                       ? (() => {
@@ -2062,6 +2062,7 @@ export default function ChatPage() {
                   onJump={jumpToTurn}
                   onJumpToBottom={resumeFollowingLatest}
                 />
+                <OverlayScrollbar scrollRef={messagesContainerRef} />
               </div>
             )}
 
