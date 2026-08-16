@@ -293,6 +293,9 @@ class _ProviderOpenAIAdapter:
             tool_choice=tool_choice,
             **kwargs,
         )
+        if response.finish_reason == "error":
+            # A failed call must surface as an exception, not as model text.
+            raise RuntimeError(response.content or "LLM request failed")
         return SimpleNamespace(
             choices=[
                 SimpleNamespace(
@@ -378,6 +381,14 @@ class _ProviderOpenAIStream:
                 on_content_delta=_on_content_delta,
                 **self._extra_kwargs,
             )
+            if response.finish_reason == "error":
+                # An error response is a failed LLM call, not model output:
+                # never stream its ``Error: …`` text into the answer. Raise so
+                # the caller surfaces a proper terminal error (the message is
+                # rendered through ``format_user_facing_error`` on the way
+                # out). Any content deltas already streamed before the
+                # failure stay visible as partial output.
+                raise RuntimeError(response.content or "LLM request failed")
             if response.content and not self._emitted_content:
                 await self._queue.put(_openai_stream_chunk(content=response.content))
             for index, tool_call in enumerate(response.tool_calls or []):

@@ -38,6 +38,20 @@ _ANSWER_CONTENT_CALL_KINDS = frozenset({"llm_final_response", "agent_loop_round"
 _FINAL_TURN_STATUSES = frozenset({"completed", "failed", "cancelled", "rejected"})
 
 
+def _user_facing_error_message(exc: Exception, payload: dict[str, Any] | None) -> str:
+    """Render a turn failure as a readable, cause-accurate user message.
+
+    Raw provider errors (``Error code: 400 - {'error': {...}}``) are dumped
+    verbatim everywhere today, which misleads users about the real cause. This
+    is the single formatting point for terminal error events and persisted
+    turn errors; the raw exception still goes to backend logs.
+    """
+    from deeptutor.utils.error_utils import format_user_facing_error
+
+    language = str((payload or {}).get("language") or "").lower()
+    return format_user_facing_error(exc, language="zh" if language.startswith("zh") else "en")
+
+
 def _should_capture_assistant_content(event: StreamEvent) -> bool:
     if event.type != StreamEventType.CONTENT:
         return False
@@ -1870,7 +1884,11 @@ class TurnRuntimeManager:
                 with contextlib.suppress(Exception):
                     await self._flush_buffered_events(execution)
                 with contextlib.suppress(Exception):
-                    await self.store.update_turn_status(turn_id, "failed", str(exc))
+                    await self.store.update_turn_status(
+                        turn_id,
+                        "failed",
+                        _user_facing_error_message(exc, payload),
+                    )
             else:
                 logger.error("Turn %s failed: %s", turn_id, exc, exc_info=True)
                 await self._publish_live_event(
@@ -1878,7 +1896,7 @@ class TurnRuntimeManager:
                     StreamEvent(
                         type=StreamEventType.ERROR,
                         source=capability_name,
-                        content=str(exc),
+                        content=_user_facing_error_message(exc, payload),
                         metadata={"turn_terminal": True, "status": "failed"},
                     ),
                 )
@@ -1892,7 +1910,11 @@ class TurnRuntimeManager:
                 )
                 with contextlib.suppress(Exception):
                     await self._flush_buffered_events(execution)
-                await self.store.update_turn_status(turn_id, "failed", str(exc))
+                await self.store.update_turn_status(
+                    turn_id,
+                    "failed",
+                    _user_facing_error_message(exc, payload),
+                )
         finally:
             if llm_scope_token is not None and reset_active_llm_selection is not None:
                 reset_active_llm_selection(llm_scope_token)

@@ -87,8 +87,10 @@ class ChatOrchestrator:
             except Exception as exc:
                 status = "failed"
                 logger.error("Capability %s failed: %s", cap_name, exc, exc_info=True)
+                from deeptutor.utils.error_utils import format_user_facing_error
+
                 await bus.error(
-                    str(exc),
+                    format_user_facing_error(exc, language=context.language),
                     source=cap_name,
                     metadata={"turn_terminal": True, "status": status},
                 )

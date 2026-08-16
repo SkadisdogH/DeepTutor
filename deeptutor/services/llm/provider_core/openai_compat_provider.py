@@ -357,6 +357,12 @@ class OpenAICompatProvider(LLMProvider):
         if status_code not in {400, 404, 405, 422, 501}:
             return False
 
+        # 404/405/501 on the Responses route mean the endpoint itself is
+        # missing or unimplemented here — the chat-completions fallback is
+        # the intended behaviour regardless of the body text.
+        if status_code in {404, 405, 501}:
+            return True
+
         body = (
             getattr(exc, "body", None)
             or getattr(exc, "doc", None)
@@ -709,11 +715,20 @@ class OpenAICompatProvider(LLMProvider):
                 except Exception as responses_error:
                     if self._spec and self._spec.name == "github_copilot":
                         raise
-                    # Prefer Responses API, but fall back to chat/completions on
-                    # ANY Responses failure (404/405/422/5xx, model_not_found,
-                    # tool-call routing errors on third-party gateways, …). The
-                    # circuit breaker records the failure so a consistently
-                    # broken Responses route is probed less often.
+                    if not self._should_fallback_from_responses_error(responses_error):
+                        # A transient/provider-side failure (5xx, 429, timeout,
+                        # gateway ``model_not_found`` …) must NOT degrade into
+                        # a chat-completions call: the fallback either fails
+                        # again with the same cause or — for models that only
+                        # speak the Responses protocol (e.g. gpt-5.6-terra via
+                        # third-party relays) — returns a misleading
+                        # ``protocol_not_supported`` error that hides the real
+                        # problem from the user. Surface the actual failure.
+                        return self._handle_error(responses_error)
+                    # Only a "Responses API not available here" style failure
+                    # (endpoint missing / unsupported) warrants the fallback
+                    # to chat/completions. The circuit breaker records it so a
+                    # consistently broken Responses route is probed less often.
                     self._record_responses_failure(model, reasoning_effort)
 
             request_kwargs = self._build_kwargs(
@@ -825,11 +840,16 @@ class OpenAICompatProvider(LLMProvider):
                 except Exception as responses_error:
                     if self._spec and self._spec.name == "github_copilot":
                         raise
-                    # Prefer Responses API, but fall back to chat/completions on
-                    # ANY Responses failure (404/405/422/5xx, model_not_found,
-                    # tool-call routing errors on third-party gateways, …). The
-                    # circuit breaker records the failure so a consistently
-                    # broken Responses route is probed less often.
+                    if not self._should_fallback_from_responses_error(responses_error):
+                        # Transient/provider-side failure — do not degrade into
+                        # a chat-completions call that hides the real cause
+                        # behind a ``protocol_not_supported`` error for
+                        # Responses-only models. Surface the actual failure.
+                        return self._handle_error(responses_error)
+                    # Only a "Responses API not available here" style failure
+                    # (endpoint missing / unsupported) warrants the fallback
+                    # to chat/completions. The circuit breaker records it so a
+                    # consistently broken Responses route is probed less often.
                     self._record_responses_failure(model, reasoning_effort)
 
             request_kwargs["stream"] = True
