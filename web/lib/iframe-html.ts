@@ -17,13 +17,25 @@ const KATEX_RESOURCES = [
     "/script>",
 ].join("\n  ");
 
+// Same containment as globals.css `.md-renderer .katex-display`: keep
+// display math from overflowing the iframe's viewport (which would make
+// the whole page drag sideways on narrow screens); short formulas stay
+// centered, over-wide ones scroll inside the formula block.
+const KATEX_OVERFLOW_CSS =
+  "<style>" +
+  ".katex-display{display:flex;overflow-x:auto;overflow-y:hidden;padding:.5em 0}" +
+  ".katex-display>.katex{flex:0 0 auto;margin-inline:auto}" +
+  ".katex-display.fleqn>.katex{margin-inline:0}" +
+  "</style>";
+
 const KATEX_INIT_SCRIPT =
   "<script data-katex-init>" +
   'document.addEventListener("DOMContentLoaded",function(){var t=0,i=setInterval(function(){if(typeof renderMathInElement==="function"){clearInterval(i);try{renderMathInElement(document.body,{delimiters:[{left:"$$",right:"$$",display:true},{left:"$",right:"$",display:false},{left:"\\\\(",right:"\\\\)",display:false},{left:"\\\\[",right:"\\\\]",display:true}],throwOnError:false})}catch(e){console.error("[KaTeX] Error:",e)}}else if(++t>50){clearInterval(i);console.warn("[KaTeX] Timeout")}},100)});' +
   "<" +
   "/script>";
 
-const KATEX_HEAD = KATEX_RESOURCES + "\n  " + KATEX_INIT_SCRIPT;
+const KATEX_HEAD =
+  KATEX_RESOURCES + "\n  " + KATEX_OVERFLOW_CSS + "\n  " + KATEX_INIT_SCRIPT;
 
 /**
  * Inject KaTeX (CSS + JS + auto-render init) into the document's `<head>`.

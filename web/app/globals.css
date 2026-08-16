@@ -336,6 +336,34 @@
   box-shadow: none !important;
 }
 
+/* ─── KaTeX display math: contain overflow ───
+   KaTeX renders display math as one unbreakable line; a formula wider
+   than the message column would otherwise push its horizontal overflow
+   up to the chat scroll root and make the whole conversation drag
+   sideways on narrow (mobile) screens.
+
+   Flex + margin-inline:auto keeps short formulas centered exactly as
+   before; an over-wide formula starts at the left edge so scrolling
+   from scrollLeft 0 reveals its beginning (a centered block would clip
+   the left part unreachably). overflow-y:hidden + vertical padding
+   keeps tall constructs (fractions / big delimiters) from being
+   clipped while the row scrolls. */
+.md-renderer .katex-display {
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.5em 0;
+}
+
+.md-renderer .katex-display > .katex {
+  flex: 0 0 auto;
+  margin-inline: auto;
+}
+
+.md-renderer .katex-display.fleqn > .katex {
+  margin-inline: 0;
+}
+
 /* ─── Headings ─── */
 .prose h1,
 .prose h2,
