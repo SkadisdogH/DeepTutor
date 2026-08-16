@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { notify } from "@/lib/notifications";
 import {
   connectLightRagServer as connectLightRagServerApi,
   connectLinkedFolder as connectLinkedFolderApi,
@@ -42,6 +44,7 @@ interface LoadOptions {
 }
 
 export function useKnowledgeBases() {
+  const { t } = useTranslation();
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [providers, setProviders] = useState<RagProviderSummary[]>([]);
   const [uploadPolicy, setUploadPolicy] = useState<KnowledgeUploadPolicy>(
@@ -214,6 +217,21 @@ export function useKnowledgeBases() {
     ): Promise<KnowledgeTaskResponse> => {
       const result = await uploadKbApi(kbName, files, { provider });
       invalidateKnowledgeCaches();
+      const skipped = result.skipped ?? [];
+      if (skipped.length > 0) {
+        const names = skipped
+          .slice(0, 3)
+          .map((entry) => entry.name)
+          .join(", ");
+        const more = skipped.length > 3 ? ` (+${skipped.length - 3})` : "";
+        notify(
+          `${t(
+            "{{count}} duplicate file(s) skipped — content already in this knowledge base.",
+            { count: skipped.length },
+          )}${names ? `: ${names}${more}` : ""}`,
+          { tone: "info", durationMs: 6000 },
+        );
+      }
       const fileCount = files.length;
       if (result.task_id) {
         progress.startTask({
@@ -223,6 +241,14 @@ export function useKnowledgeBases() {
           label: `Upload to ${kbName}`,
           initialLogs: [
             `Queued upload task for ${kbName}.`,
+            ...(skipped.length > 0
+              ? [
+                  `Skipped ${skipped.length} duplicate(s) (content already in KB): ${skipped
+                    .slice(0, 5)
+                    .map((entry) => entry.name)
+                    .join(", ")}${skipped.length > 5 ? "..." : ""}`,
+                ]
+              : []),
             "Waiting for backend indexing logs...",
           ],
           seed: {
@@ -239,7 +265,7 @@ export function useKnowledgeBases() {
       await load({ force: true, showSpinner: false });
       return result;
     },
-    [load, progress],
+    [load, progress, t],
   );
 
   const setDefault = useCallback(

@@ -9,11 +9,13 @@ import asyncio
 from datetime import datetime
 import json
 import logging
+import math
 import mimetypes
 import os
 from pathlib import Path
 import re
 import shutil
+import tempfile
 import traceback
 from uuid import uuid4
 
@@ -34,6 +36,12 @@ from deeptutor.api.utils.progress_broadcaster import ProgressBroadcaster
 from deeptutor.api.utils.task_id_manager import TaskIDManager
 from deeptutor.api.utils.task_log_stream import capture_task_logs, get_task_stream_manager
 from deeptutor.knowledge.add_documents import DocumentAdder, remove_raw_document
+from deeptutor.knowledge.file_hashes import (
+    dedupe_hash_set,
+    ensure_raw_hashes,
+    is_sha256_hex,
+    sha256_stream,
+)
 from deeptutor.knowledge.initializer import KnowledgeBaseInitializer
 from deeptutor.knowledge.kb_types import is_connected_kb, supports_local_raw_files
 from deeptutor.knowledge.manager import KnowledgeBaseManager
@@ -338,21 +346,42 @@ def _save_uploaded_files(
     allowed_extensions: set[str] | None = None,
     kb_name: str | None = None,
     rel_paths: list[str] | None = None,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], list[dict[str, str]]]:
     """
     Save uploaded files to the local raw/ directory.
 
     When PocketBase is enabled and ``kb_name`` is supplied, each file is also
     uploaded to the PocketBase knowledge_bases record as a file attachment
     (best-effort — local write is always the primary path).
+
+    Returns ``(uploaded_files, uploaded_file_paths, skipped_files)`` where
+    ``skipped_files`` lists entries ``{"name", "reason"}`` for files whose
+    content hash already exists in the KB's hash store (``reason="duplicate"``)
+    — those bytes are never persisted and never handed to the indexer.
     """
     uploaded_files: list[str] = []
     uploaded_file_paths: list[str] = []
     written_file_paths: list[Path] = []
+    skipped_files: list[dict[str, str]] = []
 
     from deeptutor.services.pocketbase_client import is_pocketbase_enabled
 
     _pb_sync = is_pocketbase_enabled() and bool(kb_name)
+
+    # Content-hash dedupe: a file whose sha256 is in the KB's hash store is a
+    # duplicate — skip persisting it entirely. Deliberately READ-ONLY: hashes
+    # are recorded only AFTER a file is successfully indexed (by
+    # DocumentAdder), never here at save time — recording at save time makes a
+    # freshly-uploaded file look "already indexed" to its own processing task,
+    # which then silently skips it (see docs/PITFALLS.md).
+    kb_dir = target_dir.parent
+    existing_hashes: set[str] | None = None
+    if kb_name:
+        try:
+            existing_hashes = dedupe_hash_set(kb_dir)
+        except Exception as exc:
+            logger.warning("Hash dedupe unavailable for KB '%s': %s", kb_name, exc)
+            existing_hashes = None
 
     try:
         for idx, file in enumerate(files):
@@ -403,6 +432,27 @@ def _save_uploaded_files(
                 file_path = dest_dir / sanitized_filename
                 max_size = DocumentValidator.MAX_FILE_SIZE
                 written_bytes = 0
+
+                # Dedupe pass: hash the incoming bytes BEFORE writing. The
+                # stream is a local spool/merged file at this point (never a
+                # live network socket), so the extra read is cheap compared to
+                # persisting a duplicate.
+                file_hash: str | None = None
+                if existing_hashes is not None:
+                    file.file.seek(0)
+                    try:
+                        file_hash = sha256_stream(file.file)
+                    except Exception as exc:
+                        logger.warning(
+                            "Could not hash uploaded file '%s': %s", rel_name, exc
+                        )
+                        file_hash = None
+                    if file_hash and file_hash in existing_hashes:
+                        logger.info(
+                            "Skipped duplicate upload (content hash match): %s", rel_name
+                        )
+                        skipped_files.append({"name": rel_name, "reason": "duplicate"})
+                        continue
 
                 file.file.seek(0)
                 with open(file_path, "wb") as buffer:
@@ -455,7 +505,7 @@ def _save_uploaded_files(
                     pass
         raise
 
-    return uploaded_files, uploaded_file_paths
+    return uploaded_files, uploaded_file_paths, skipped_files
 
 
 async def _save_uploaded_files_off_loop(
@@ -464,14 +514,15 @@ async def _save_uploaded_files_off_loop(
     allowed_extensions: set[str] | None = None,
     kb_name: str | None = None,
     rel_paths: list[str] | None = None,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], list[dict[str, str]]]:
     """:func:`_save_uploaded_files` on a worker thread.
 
     That function blocks end to end — a chunked write of every uploaded byte,
-    zip extraction for archive members, and (when PocketBase is enabled) one
-    synchronous HTTP upload per file. Called inline from an ``async def``
-    route it held the event loop for the whole batch, so every other request
-    — chat WebSockets included — stalled until the upload finished (#777).
+    content hashing for dedupe, zip extraction for archive members, and (when
+    PocketBase is enabled) one synchronous HTTP upload per file. Called inline
+    from an ``async def`` route it held the event loop for the whole batch, so
+    every other request — chat WebSockets included — stalled until the upload
+    finished (#777).
 
     Safe to hand to a thread: it only touches ``UploadFile.file``, the plain
     ``SpooledTemporaryFile`` underneath, never the async ``UploadFile`` API.
@@ -768,6 +819,21 @@ async def run_initialization_task(initializer: KnowledgeBaseInitializer, task_id
 
             await initializer.process_documents()
             _task_log(task_id, "Document processing complete")
+
+            # Record content hashes for every indexed raw file so later uploads
+            # can dedupe against KBs created through the create path (which
+            # historically stored no hashes). Hashing runs off the event loop.
+            try:
+                await asyncio.to_thread(
+                    ensure_raw_hashes, initializer.kb_dir, initializer.raw_dir
+                )
+            except Exception as hash_exc:
+                logger.warning(
+                    "Failed to record content hashes for KB '%s': %s",
+                    initializer.kb_name,
+                    hash_exc,
+                )
+
             _task_log(task_id, "Finalizing initialization")
             indexed_count = len(
                 FileTypeRouter.collect_supported_files(initializer.raw_dir, recursive=True)
@@ -2252,9 +2318,26 @@ async def upload_files(
         # archive itself is never indexed (``safe_extract_zip`` skips ``.zip``).
         upload_extensions = allowed_extensions | {".zip"}
         _validate_upload_batch(files, allowed_extensions=upload_extensions, rel_paths=rel_paths)
-        uploaded_files, uploaded_file_paths = await _save_uploaded_files_off_loop(
-            files, raw_dir, allowed_extensions=upload_extensions, rel_paths=rel_paths
+        uploaded_files, uploaded_file_paths, skipped_files = await _save_uploaded_files_off_loop(
+            files, raw_dir, allowed_extensions=upload_extensions, kb_name=kb_name, rel_paths=rel_paths
         )
+
+        if not uploaded_files:
+            logger.info(
+                "All %d uploaded file(s) for KB '%s' are duplicates (content hash match)",
+                len(skipped_files),
+                kb_name,
+            )
+            return {
+                "message": (
+                    "All files already exist in this knowledge base (content hash "
+                    "match); nothing was uploaded."
+                ),
+                "files": [],
+                "skipped": skipped_files,
+                "task_id": None,
+            }
+
         task_id = _build_unique_task_id("kb_upload", kb_name)
         get_task_stream_manager().ensure_task(task_id)
 
@@ -2279,6 +2362,7 @@ async def upload_files(
         return {
             "message": f"Uploaded {len(uploaded_files)} files. Processing in background.",
             "files": uploaded_files,
+            "skipped": skipped_files,
             "task_id": task_id,
         }
     except HTTPException:
@@ -2289,6 +2373,506 @@ async def upload_files(
         # Unexpected failure (Server error)
         formatted_error = format_exception_message(e)
         raise HTTPException(status_code=500, detail=formatted_error) from e
+
+
+# ---------------------------------------------------------------------------
+# Chunked uploads (large multi-file batches)
+#
+# The Next.js middleware proxy caps the buffered request body at 210MB
+# (web/next.config.js `proxyClientMaxBodySize`), so one classic multipart
+# request carrying several files whose *combined* size exceeds that cap is
+# silently truncated and the backend answers 400 (multipart parse failure).
+# Chunked uploads move the byte stream out of the proxy limit: one batch per
+# upload action, one small part per request (UPLOAD_CHUNK_SIZE, far below the
+# proxy cap), reassembled server-side at `complete` and then fed through the
+# exact same pipeline as the classic upload (validation, raw/, PocketBase,
+# background processing task).
+#
+# Lifecycle: `POST .../upload/batch` creates the batch (validates the file
+# manifest only) -> `POST .../upload/chunk` streams each part (idempotent per
+# part index) -> `POST .../upload/complete` merges, persists and dispatches
+# the task, then deletes the temporary parts. `POST .../upload/cancel` drops
+# an abandoned batch. Temporary parts live under the system temp dir and are
+# removed on success/cancel; a client that vanishes mid-upload leaves parts
+# behind for the OS temp cleaner.
+# ---------------------------------------------------------------------------
+
+UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # bytes per part; well under the proxy cap
+UPLOAD_TMP_ROOT_NAME = "deeptutor_chunked_uploads"
+
+
+class ChunkedUploadFileManifest(BaseModel):
+    name: str
+    size: int
+    rel_path: str = ""
+    # Optional client-computed sha256 hex digest of the file's bytes. When
+    # present and matching the KB's hash store, the file is flagged
+    # ``duplicate`` in the plan so the client can skip transferring it; the
+    # authoritative check still happens at `complete` against real bytes.
+    sha256: str = ""
+
+
+class ChunkedUploadBatchRequest(BaseModel):
+    files: list[ChunkedUploadFileManifest]
+    rag_provider: str | None = None
+
+
+class ChunkedUploadCompleteRequest(BaseModel):
+    batch_id: str
+
+
+class ChunkedUploadCancelRequest(BaseModel):
+    batch_id: str
+
+
+def _chunk_upload_root() -> Path:
+    return Path(tempfile.gettempdir()) / UPLOAD_TMP_ROOT_NAME
+
+
+def _chunk_batch_dir(batch_id: str) -> Path:
+    return _chunk_upload_root() / batch_id
+
+
+def _load_chunk_manifest(batch_dir: Path) -> dict:
+    manifest_path = batch_dir / "manifest.json"
+    if not manifest_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Upload batch not found or already completed",
+        )
+    try:
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Upload batch manifest unreadable: {format_exception_message(e)}",
+        ) from e
+
+
+def _chunk_count_for(size: int, chunk_size: int) -> int:
+    return max(1, math.ceil(size / chunk_size)) if chunk_size > 0 else 1
+
+
+def _validate_chunked_manifest(
+    files: list[ChunkedUploadFileManifest],
+    allowed_extensions: set[str] | None,
+) -> list[dict]:
+    """Validate a chunked-upload manifest without any uploaded bytes yet.
+
+    Mirrors the per-file rules of ``_validate_upload_batch`` (sanitization,
+    size ceiling, duplicate-name rejection) so an invalid manifest fails
+    before any part bytes are transferred.
+    """
+    validated: list[dict] = []
+    seen_names: set[str] = set()
+    for file in files:
+        original_filename = file.name or "upload"
+        if not isinstance(file.size, int) or file.size < 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid size for file '{original_filename}'",
+            )
+        try:
+            sanitized_filename = DocumentValidator.validate_upload_safety(
+                original_filename,
+                file.size,
+                allowed_extensions=allowed_extensions,
+            )
+        except Exception as e:
+            error_message = (
+                f"Validation failed for file '{original_filename}': "
+                f"{format_exception_message(e)}"
+            )
+            raise HTTPException(status_code=400, detail=error_message) from e
+
+        rel = (file.rel_path or "").replace("\\", "/")
+        subdir = _sanitize_rel_subdir(rel.rsplit("/", 1)[0]) if "/" in rel else ""
+        duplicate_key = f"{subdir}/{sanitized_filename}" if subdir else sanitized_filename
+
+        if duplicate_key in seen_names:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Duplicate filename after sanitization: '{duplicate_key}'. "
+                    "Rename one of the files and try again."
+                ),
+            )
+
+        seen_names.add(duplicate_key)
+        validated.append(
+            {
+                "original_filename": original_filename,
+                "sanitized_filename": sanitized_filename,
+                "rel_path": rel,
+                "size": file.size,
+            }
+        )
+    return validated
+
+
+def _validate_chunked_provider_formats(provider: str, files: list[ChunkedUploadFileManifest]) -> None:
+    """Manifest-only variant of ``_enforce_provider_formats`` (no UploadFiles yet)."""
+    if provider != PAGEINDEX_PROVIDER:
+        return
+    from deeptutor.services.rag.pipelines.pageindex.pipeline import SUPPORTED_EXTENSIONS
+
+    unsupported = [
+        f.name
+        for f in files
+        if f.name
+        and not f.name.lower().endswith(".zip")
+        and Path(f.name).suffix.lower() not in SUPPORTED_EXTENSIONS
+    ]
+    if unsupported:
+        supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"PageIndex knowledge bases accept: {supported}. "
+                f"Unsupported: {', '.join(unsupported[:5])}."
+            ),
+        )
+
+
+@router.post("/{kb_name}/upload/batch")
+async def create_upload_batch(kb_name: str, request: ChunkedUploadBatchRequest) -> dict:
+    """Create a chunked-upload batch for one upload action (possibly many files).
+
+    Only the manifest is validated here; the file bytes arrive later as
+    individual parts. Returns the batch id and per-file chunk counts the
+    client uses to drive the part uploads.
+    """
+    if not request.files:
+        raise HTTPException(status_code=400, detail="No files specified for upload")
+
+    manager, kb_name, _ = _writable_kb(kb_name)
+    kb_entry = _load_kb_entry_or_404(manager, kb_name)
+    _assert_kb_writable_or_409(kb_name, kb_entry)
+    kb_provider = _validate_registered_provider(
+        kb_entry.get("rag_provider") or DEFAULT_PROVIDER
+    )
+    if request.rag_provider and str(request.rag_provider).strip():
+        requested_provider = _validate_registered_provider(request.rag_provider)
+        if requested_provider != kb_provider:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Requested provider '{requested_provider}' does not match KB provider '{kb_provider}'. "
+                    "A knowledge base is locked to the engine it was created with."
+                ),
+            )
+    _assert_provider_ready(kb_provider)
+
+    allowed_extensions = FileTypeRouter.get_supported_extensions() | {".zip"}
+    _validate_chunked_manifest(request.files, allowed_extensions)
+    _validate_chunked_provider_formats(kb_provider, request.files)
+
+    # Content-hash dedupe against the KB's recorded hash store (read-only —
+    # only successfully-indexed content is recorded, see file_hashes module).
+    existing_hashes: set[str] = set()
+    try:
+        kb_dir = manager.get_knowledge_base_path(kb_name)
+        existing_hashes = await asyncio.to_thread(dedupe_hash_set, kb_dir)
+    except Exception as exc:
+        logger.warning(
+            "Hash dedupe unavailable for KB '%s' at batch creation: %s", kb_name, exc
+        )
+
+    batch_id = uuid4().hex
+    batch_dir = _chunk_batch_dir(batch_id)
+    batch_dir.mkdir(parents=True, exist_ok=False)
+
+    files_meta = []
+    for index, file in enumerate(request.files):
+        sha = (file.sha256 or "").strip().lower()
+        valid_sha = is_sha256_hex(sha)
+        files_meta.append(
+            {
+                "index": index,
+                "name": file.name,
+                "rel_path": file.rel_path or "",
+                "size": file.size,
+                "chunk_count": _chunk_count_for(file.size, UPLOAD_CHUNK_SIZE),
+                "sha256": sha if valid_sha else "",
+                "duplicate": bool(valid_sha and sha in existing_hashes),
+            }
+        )
+    manifest = {
+        "version": 1,
+        "kb_name": kb_name,
+        "chunk_size": UPLOAD_CHUNK_SIZE,
+        "created_at": datetime.now().isoformat(),
+        "files": files_meta,
+    }
+    atomic_write_json(batch_dir / "manifest.json", manifest)
+
+    logger.info(
+        "Created chunked upload batch %s for KB '%s' (%d file(s), %d byte(s) total, %d duplicate)",
+        batch_id,
+        kb_name,
+        len(files_meta),
+        sum(f["size"] for f in files_meta),
+        sum(1 for f in files_meta if f["duplicate"]),
+    )
+    return {
+        "batch_id": batch_id,
+        "chunk_size": UPLOAD_CHUNK_SIZE,
+        "max_file_size_bytes": DocumentValidator.MAX_FILE_SIZE,
+        "files": [
+            {key: value for key, value in meta.items() if key != "sha256"}
+            for meta in files_meta
+        ],
+    }
+
+
+@router.post("/{kb_name}/upload/chunk")
+async def upload_chunk(
+    kb_name: str,
+    batch_id: str = Form(...),
+    file_index: int = Form(...),
+    chunk_index: int = Form(...),
+    data: UploadFile = File(...),
+) -> dict:
+    """Stream one part of one file of a chunked-upload batch.
+
+    Idempotent per ``(file_index, chunk_index)``: re-sending an already
+    stored part succeeds without overwriting it, so the client can safely
+    retry a part after a network hiccup.
+    """
+    batch_dir = _chunk_batch_dir(batch_id)
+    manifest = _load_chunk_manifest(batch_dir)
+    if manifest.get("kb_name") != kb_name:
+        raise HTTPException(status_code=404, detail="Upload batch not found")
+
+    files_meta = manifest["files"]
+    if file_index < 0 or file_index >= len(files_meta):
+        raise HTTPException(status_code=400, detail=f"Invalid file index {file_index}")
+    meta = files_meta[file_index]
+    chunk_size = int(manifest.get("chunk_size") or UPLOAD_CHUNK_SIZE)
+    chunk_count = int(meta["chunk_count"])
+    if chunk_index < 0 or chunk_index >= chunk_count:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid chunk index {chunk_index} (expected 0..{chunk_count - 1})",
+        )
+
+    actual_size = _get_upload_file_size(data)
+    if actual_size is not None and actual_size > chunk_size:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Chunk {chunk_index} exceeds chunk size limit of {chunk_size} bytes",
+        )
+
+    file_dir = batch_dir / f"f{file_index}"
+    file_dir.mkdir(parents=True, exist_ok=True)
+    part_path = file_dir / f"part_{chunk_index:06d}"
+    if part_path.exists():
+        return {
+            "ok": True,
+            "batch_id": batch_id,
+            "file_index": file_index,
+            "chunk_index": chunk_index,
+            "duplicate": True,
+        }
+
+    data.file.seek(0)
+    written = 0
+    with open(part_path, "wb") as out:
+        while True:
+            block = data.file.read(1024 * 1024)
+            if not block:
+                break
+            written += len(block)
+            if written > chunk_size:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Chunk {chunk_index} exceeds chunk size limit of {chunk_size} bytes",
+                )
+            out.write(block)
+
+    return {
+        "ok": True,
+        "batch_id": batch_id,
+        "file_index": file_index,
+        "chunk_index": chunk_index,
+        "duplicate": False,
+    }
+
+
+@router.post("/{kb_name}/upload/complete")
+async def complete_upload_batch(
+    kb_name: str,
+    request: ChunkedUploadCompleteRequest,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """Merge all parts of a batch, persist them under raw/ and dispatch the
+    background processing task — the same outcome as the classic upload route.
+
+    The temporary parts are deleted only on success; on failure they are kept
+    so the client can re-`complete` after topping up missing parts (or call
+    `cancel` to abandon the batch).
+    """
+    batch_dir = _chunk_batch_dir(request.batch_id)
+    manifest = _load_chunk_manifest(batch_dir)
+    if manifest.get("kb_name") != kb_name:
+        raise HTTPException(status_code=404, detail="Upload batch not found")
+
+    # Guard against two concurrent completes of the same batch.
+    completing_flag = batch_dir / ".completing"
+    if completing_flag.exists():
+        raise HTTPException(status_code=409, detail="Upload batch is already being completed")
+    completing_flag.touch()
+
+    completed = False
+    merged_paths: list[Path] = []
+    skipped_files: list[dict[str, str]] = []
+    try:
+        files_meta = manifest["files"]
+        chunk_size = int(manifest.get("chunk_size") or UPLOAD_CHUNK_SIZE)
+        merged_dir = batch_dir / "merged"
+        merged_dir.mkdir(parents=True, exist_ok=True)
+
+        for meta in files_meta:
+            # Files flagged duplicate at batch creation (client-supplied hash
+            # matched the KB's store) are not expected to arrive as parts. Any
+            # parts a client uploaded anyway are discarded with the batch dir.
+            if meta.get("duplicate"):
+                skipped_files.append({"name": meta["name"], "reason": "duplicate"})
+                continue
+            file_dir = batch_dir / f"f{meta['index']}"
+            present = sorted(file_dir.glob("part_*")) if file_dir.exists() else []
+            expected_count = int(meta["chunk_count"])
+            if len(present) != expected_count:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"File '{meta['name']}' incomplete: {len(present)}/{expected_count} "
+                        "chunks received"
+                    ),
+                )
+            merged_path = merged_dir / str(meta["index"])
+            total = 0
+            with open(merged_path, "wb") as out:
+                for part in present:
+                    with open(part, "rb") as p:
+                        shutil.copyfileobj(p, out, length=1024 * 1024)
+                    total += part.stat().st_size
+            if total != int(meta["size"]):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"File '{meta['name']}' size mismatch: got {total} bytes, "
+                        f"expected {meta['size']}"
+                    ),
+                )
+            merged_paths.append(merged_path)
+
+        # Re-resolve the KB now that bytes actually exist; mirrors the classic
+        # upload route's checks (writable, provider ready, formats).
+        manager, kb_name, kb_base_dir = _writable_kb(kb_name)
+        kb_entry = _load_kb_entry_or_404(manager, kb_name)
+        _assert_kb_writable_or_409(kb_name, kb_entry)
+        kb_provider = _validate_registered_provider(
+            kb_entry.get("rag_provider") or DEFAULT_PROVIDER
+        )
+        _assert_provider_ready(kb_provider)
+
+        allowed_extensions = FileTypeRouter.get_supported_extensions() | {".zip"}
+        kb_path = manager.get_knowledge_base_path(kb_name)
+        raw_dir = kb_path / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+
+        upload_meta = [meta for meta in files_meta if not meta.get("duplicate")]
+        upload_files = [
+            UploadFile(file=open(merged_path, "rb"), filename=meta["name"])
+            for merged_path, meta in zip(merged_paths, upload_meta)
+        ]
+        rel_paths = [str(meta.get("rel_path") or "") for meta in upload_meta]
+        try:
+            uploaded_files, uploaded_file_paths, save_skipped = (
+                await _save_uploaded_files_off_loop(
+                    upload_files,
+                    raw_dir,
+                    allowed_extensions=allowed_extensions,
+                    kb_name=kb_name,
+                    rel_paths=rel_paths,
+                )
+            )
+        finally:
+            for f in upload_files:
+                try:
+                    f.file.close()
+                except Exception:
+                    pass
+        skipped_files.extend(save_skipped)
+
+        if not uploaded_files:
+            # Every file was a duplicate: nothing persisted, nothing to index.
+            logger.info(
+                "All %d file(s) in batch %s are duplicates for KB '%s'",
+                len(skipped_files),
+                request.batch_id,
+                kb_name,
+            )
+            completed = True
+            return {
+                "message": (
+                    "All files already exist in this knowledge base (content hash "
+                    "match); nothing was uploaded."
+                ),
+                "files": [],
+                "skipped": skipped_files,
+                "task_id": None,
+            }
+
+        task_id = _build_unique_task_id("kb_upload", kb_name)
+        get_task_stream_manager().ensure_task(task_id)
+        logger.info(f"Uploading {len(uploaded_files)} files to KB '{kb_name}' (chunked)")
+
+        _mark_kb_queued_for_processing(
+            manager,
+            kb_name,
+            task_id,
+            f"Processing {len(uploaded_files)} uploaded file(s)...",
+        )
+        background_tasks.add_task(
+            run_upload_processing_task,
+            kb_name=kb_name,
+            base_dir=str(kb_base_dir),
+            uploaded_file_paths=uploaded_file_paths,
+            task_id=task_id,
+            rag_provider=kb_provider,
+        )
+
+        completed = True
+        return {
+            "message": f"Uploaded {len(uploaded_files)} files. Processing in background.",
+            "files": uploaded_files,
+            "skipped": skipped_files,
+            "task_id": task_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        formatted_error = format_exception_message(e)
+        raise HTTPException(status_code=500, detail=formatted_error) from e
+    finally:
+        if completed:
+            shutil.rmtree(batch_dir, ignore_errors=True)
+        else:
+            try:
+                completing_flag.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+@router.post("/{kb_name}/upload/cancel")
+async def cancel_upload_batch(kb_name: str, request: ChunkedUploadCancelRequest) -> dict:
+    """Abandon a chunked-upload batch and drop its temporary parts (idempotent)."""
+    batch_dir = _chunk_batch_dir(request.batch_id)
+    if batch_dir.exists():
+        shutil.rmtree(batch_dir, ignore_errors=True)
+    return {"ok": True}
 
 
 @router.post("/create")
@@ -2359,7 +2943,7 @@ async def create_knowledge_base(
             logger.warning(f"KB {name} not found in config, registering manually")
             initializer._register_to_config()
 
-        uploaded_files, _ = await _save_uploaded_files_off_loop(
+        uploaded_files, _, _ = await _save_uploaded_files_off_loop(
             files, initializer.raw_dir, allowed_extensions=allowed_extensions, rel_paths=rel_paths
         )
 

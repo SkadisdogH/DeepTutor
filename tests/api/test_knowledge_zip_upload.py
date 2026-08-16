@@ -49,7 +49,8 @@ def test_zip_upload_extracts_only_supported_members(tmp_path: Path) -> None:
     raw = tmp_path / "raw"
     raw.mkdir()
 
-    names, paths = _save_uploaded_files([upload], raw, allowed_extensions=ALLOWED)
+    names, paths, skipped = _save_uploaded_files([upload], raw, allowed_extensions=ALLOWED)
+    assert skipped == []
 
     assert sorted(names) == ["notes.txt", "paper.md"]
     assert (raw / "notes.txt").read_bytes() == b"hello"
@@ -68,7 +69,7 @@ def test_zip_upload_with_zip_slip_member_stays_in_target(tmp_path: Path) -> None
     raw = tmp_path / "raw"
     raw.mkdir()
 
-    names, _ = _save_uploaded_files([upload], raw, allowed_extensions=ALLOWED)
+    names, _, _ = _save_uploaded_files([upload], raw, allowed_extensions=ALLOWED)
 
     assert sorted(names) == ["escape.txt", "safe.txt"]
     assert (raw / "escape.txt").exists()

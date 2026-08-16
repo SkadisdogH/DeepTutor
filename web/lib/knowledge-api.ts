@@ -1,3 +1,4 @@
+import { sha256 } from "js-sha256";
 import { apiFetch, apiUrl } from "@/lib/api";
 import { invalidateClientCache, withClientCache } from "@/lib/client-cache";
 
@@ -506,6 +507,13 @@ export interface KnowledgeTaskResponse {
   task_id?: string;
   message?: string;
   noop?: boolean;
+  /** Files the server skipped without persisting (content hash already known). */
+  skipped?: UploadSkippedFile[];
+}
+
+export interface UploadSkippedFile {
+  name: string;
+  reason: string;
 }
 
 async function readErrorDetail(
@@ -719,24 +727,178 @@ export async function connectLightRagServer(payload: {
   };
 }
 
+export interface ChunkedUploadFilePlan {
+  index: number;
+  name: string;
+  rel_path: string;
+  size: number;
+  chunk_count: number;
+  /**
+   * Server verdict from the client-supplied sha256: the KB's hash store
+   * already contains this content, so the client can skip transferring the
+   * bytes. The authoritative check still happens server-side at `complete`.
+   */
+  duplicate?: boolean;
+}
+
+export interface ChunkedUploadBatch {
+  batch_id: string;
+  chunk_size: number;
+  max_file_size_bytes: number;
+  files: ChunkedUploadFilePlan[];
+}
+
+// Client-side content hashing for upload dedupe. js-sha256 hashes
+// incrementally (crypto.subtle is one-shot and would need the whole file in
+// memory), so even a 200MB book is hashed in bounded memory by slicing the
+// File into the same 8MB chunks the upload uses.
+const HASH_CHUNK_SIZE = 8 * 1024 * 1024;
+
+export async function sha256File(file: File): Promise<string> {
+  const hasher = sha256.create();
+  for (let offset = 0; offset < file.size; offset += HASH_CHUNK_SIZE) {
+    const end = Math.min(offset + HASH_CHUNK_SIZE, file.size);
+    const buffer = await file.slice(offset, end).arrayBuffer();
+    hasher.update(new Uint8Array(buffer));
+    // Yield to the event loop between chunks so the UI stays responsive while
+    // large files are hashed.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return hasher.hex();
+}
+
+// Chunked upload flow. The Next.js middleware proxy caps the buffered request
+// body at 210MB (web/next.config.js `proxyClientMaxBodySize`), so a classic
+// multipart upload whose *combined* file size exceeds that cap is silently
+// truncated and the backend answers 400. Splitting every file into ~8MB parts
+// (one request per part) keeps each request far below the proxy cap no matter
+// how many files — or how large their total — the user picks.
+async function createUploadBatch(
+  name: string,
+  files: File[],
+  hashes?: (string | undefined)[],
+  provider?: string,
+): Promise<ChunkedUploadBatch> {
+  const res = await apiFetch(
+    apiUrl(`/api/v1/knowledge/${encodeURIComponent(name)}/upload/batch`),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        files: files.map((file, index) => ({
+          name: file.name,
+          size: file.size,
+          rel_path: file.webkitRelativePath || "",
+          sha256: hashes?.[index] || "",
+        })),
+        rag_provider: provider,
+      }),
+    },
+  );
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res, "Failed to start upload"));
+  }
+  return (await res.json()) as ChunkedUploadBatch;
+}
+
+async function uploadChunk(
+  name: string,
+  batchId: string,
+  fileIndex: number,
+  chunkIndex: number,
+  blob: Blob,
+): Promise<void> {
+  const form = new FormData();
+  form.append("batch_id", batchId);
+  form.append("file_index", String(fileIndex));
+  form.append("chunk_index", String(chunkIndex));
+  form.append("data", blob, "part.bin");
+  const res = await apiFetch(
+    apiUrl(`/api/v1/knowledge/${encodeURIComponent(name)}/upload/chunk`),
+    { method: "POST", body: form },
+  );
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res, "Failed to upload chunk"));
+  }
+}
+
+async function completeUploadBatch(
+  name: string,
+  batchId: string,
+): Promise<KnowledgeTaskResponse> {
+  const res = await apiFetch(
+    apiUrl(`/api/v1/knowledge/${encodeURIComponent(name)}/upload/complete`),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ batch_id: batchId }),
+    },
+  );
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res, "Failed to finalize upload"));
+  }
+  return (await res.json()) as KnowledgeTaskResponse;
+}
+
+async function cancelUploadBatch(name: string, batchId: string): Promise<void> {
+  try {
+    await apiFetch(
+      apiUrl(`/api/v1/knowledge/${encodeURIComponent(name)}/upload/cancel`),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batch_id: batchId }),
+      },
+    );
+  } catch {
+    // Best-effort cleanup; ignore network hiccups.
+  }
+}
+
 export async function uploadKnowledgeBaseFiles(
   name: string,
   files: File[],
   options?: { provider?: string },
 ): Promise<KnowledgeTaskResponse> {
-  const form = new FormData();
-  appendFilesWithPaths(form, files);
-  if (options?.provider) form.append("rag_provider", options.provider);
-
-  const res = await apiFetch(
-    apiUrl(`/api/v1/knowledge/${encodeURIComponent(name)}/upload`),
-    { method: "POST", body: form },
-  );
-  if (!res.ok) {
-    throw new Error(await readErrorDetail(res, "Failed to upload files"));
+  // Hash every file client-side first so the server can flag duplicates in
+  // the batch plan and we never transfer bytes the KB already has.
+  const hashes = await Promise.all(files.map((file) => sha256File(file)));
+  const batch = await createUploadBatch(name, files, hashes, options?.provider);
+  try {
+    const chunkSize = Math.max(1, batch.chunk_size);
+    for (const plan of batch.files) {
+      if (plan.duplicate) {
+        // Server verified (from our hash) that this content already exists in
+        // the KB — skip transferring it entirely; `complete` reports it as
+        // skipped without requiring its parts.
+        continue;
+      }
+      const file = files[plan.index];
+      if (!file) {
+        throw new Error(
+          `Upload plan references missing file at index ${plan.index}`,
+        );
+      }
+      for (let chunkIndex = 0; chunkIndex < plan.chunk_count; chunkIndex++) {
+        const start = chunkIndex * chunkSize;
+        const end = Math.min(start + chunkSize, file.size);
+        await uploadChunk(
+          name,
+          batch.batch_id,
+          plan.index,
+          chunkIndex,
+          file.slice(start, end),
+        );
+      }
+    }
+    const result = await completeUploadBatch(name, batch.batch_id);
+    invalidateKnowledgeCaches();
+    return result;
+  } catch (error) {
+    // Abandon the temporary server-side parts so failed attempts don't leak.
+    await cancelUploadBatch(name, batch.batch_id);
+    throw error;
   }
-  invalidateKnowledgeCaches();
-  return (await res.json()) as KnowledgeTaskResponse;
 }
 
 export async function createKbFolder(

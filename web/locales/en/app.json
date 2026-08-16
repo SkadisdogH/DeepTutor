@@ -685,6 +685,7 @@
   "No ready knowledge base is available for upload. Create a new KB or reindex legacy KBs first.": "No ready knowledge base is available for upload. Create a new KB or reindex legacy KBs first.",
   "Upload": "Upload",
   "Upload Process": "Upload Process",
+  "{{count}} duplicate file(s) skipped — content already in this knowledge base.": "{{count}} duplicate file(s) skipped — content already in this knowledge base.",
   "Knowledge bases": "Knowledge bases",
   "needs reindex": "needs reindex",
   "Set default": "Set default",

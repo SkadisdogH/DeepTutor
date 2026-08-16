@@ -685,6 +685,7 @@
   "No ready knowledge base is available for upload. Create a new KB or reindex legacy KBs first.": "没有可用于上传的就绪知识库。请先创建新知识库或重新索引旧知识库。",
   "Upload": "上传",
   "Upload Process": "上传进度",
+  "{{count}} duplicate file(s) skipped — content already in this knowledge base.": "已跳过 {{count}} 个重复文件——知识库中已存在相同内容。",
   "Knowledge bases": "知识库列表",
   "needs reindex": "需要重新索引",
   "Set default": "设为默认",
