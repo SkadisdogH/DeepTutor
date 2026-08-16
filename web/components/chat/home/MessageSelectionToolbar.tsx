@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { createPortal } from "react-dom";
 import { Check, Copy, MessageSquarePlus } from "lucide-react";
 
 /**
@@ -162,7 +163,9 @@ export function MessageSelectionToolbar() {
   // 尺寸用近似值（工具条只有“复制 / 加入对话”两个按钮），在渲染期直接算出，
   // 避免在 effect 里调用 setState。
   const BAR_W = 200;
-  const BAR_H = 34;
+  const BAR_H = 36;
+  // 工具条与选区之间的留白：让工具条整体避开选中内容，不压住选中的文本。
+  const BAR_GAP = 16;
   const pos = (() => {
     if (!sel) return null;
     const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
@@ -170,46 +173,52 @@ export function MessageSelectionToolbar() {
     const centerX = sel.rect.left + sel.rect.width / 2;
     let left = centerX - BAR_W / 2;
     left = Math.max(8, Math.min(left, vw - BAR_W - 8));
-    let top = sel.rect.top - BAR_H - 8;
-    if (top < 8) top = sel.rect.bottom + 8;
+    let top = sel.rect.top - BAR_H - BAR_GAP;
+    if (top < BAR_GAP) top = sel.rect.bottom + BAR_GAP;
     if (top + BAR_H > vh - 8) top = Math.max(8, vh - BAR_H - 8);
     return { left, top };
   })();
 
   if (!sel) return null;
 
-  return (
-    <div
-      ref={barRef}
-      role="toolbar"
-      aria-label={t("Message selection actions")}
-      className="fixed z-[60] flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-lg"
-      style={pos ?? undefined}
-      onMouseDown={(e) => e.preventDefault()}
-    >
-      <button
-        type="button"
-        onClick={() => void handleCopy()}
-        aria-label={copied ? t("Copied") : t("Copy")}
-        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)]/50 hover:text-[var(--foreground)]"
-      >
-        {copied ? (
-          <Check size={14} strokeWidth={2} className="text-[var(--primary)]" />
-        ) : (
-          <Copy size={14} strokeWidth={1.5} />
-        )}
-        {copied ? t("Copied") : t("Copy")}
-      </button>
-      <span className="mx-0.5 h-4 w-px bg-[var(--border)]" />
-      <button
-        type="button"
-        onClick={handleAddToConversation}
-        aria-label={t("Add to conversation")}
-        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)]/50 hover:text-[var(--foreground)]"
-      >
-        <MessageSquarePlus size={14} strokeWidth={1.5} />
-        {t("Add to conversation")}
-      </button>
-    </div>
-  );
+  // 渲染到 document.body：工具条若留在消息列表里，祖先 data-chat-scroll-root 的
+  // mask-image（底部渐隐）会成为 fixed 后代的包含块，把视口坐标错位到滚动容器
+  // 坐标系，导致工具条压住选中的内容。portal 到 body 后 fixed 恢复相对视口定位。
+  return typeof document === "undefined"
+    ? null
+    : createPortal(
+        <div
+          ref={barRef}
+          role="toolbar"
+          aria-label={t("Message selection actions")}
+          className="fixed z-[60] flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-lg"
+          style={pos ?? undefined}
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          <button
+            type="button"
+            onClick={() => void handleCopy()}
+            aria-label={copied ? t("Copied") : t("Copy")}
+            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)]/50 hover:text-[var(--foreground)]"
+          >
+            {copied ? (
+              <Check size={14} strokeWidth={2} className="text-[var(--primary)]" />
+            ) : (
+              <Copy size={14} strokeWidth={1.5} />
+            )}
+            {copied ? t("Copied") : t("Copy")}
+          </button>
+          <span className="mx-0.5 h-4 w-px bg-[var(--border)]" />
+          <button
+            type="button"
+            onClick={handleAddToConversation}
+            aria-label={t("Add to conversation")}
+            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)]/50 hover:text-[var(--foreground)]"
+          >
+            <MessageSquarePlus size={14} strokeWidth={1.5} />
+            {t("Add to conversation")}
+          </button>
+        </div>,
+        document.body,
+      );
 }
