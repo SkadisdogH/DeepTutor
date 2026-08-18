@@ -13,6 +13,7 @@ consumes ``input/*.txt`` regardless of which parser produced the text.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Iterable
@@ -76,13 +77,18 @@ async def prepare_input(file_paths: Iterable[str], root_dir: Path) -> int:
 
     for file_path_str in classification.parser_files:
         path = Path(file_path_str)
-        text = _extract_parser_text(path)
+        # Parsing is CPU-bound; keep it off the event loop (same pattern as
+        # the llamaindex document loader — sync parse in an async pipeline
+        # would freeze every request for the length of the batch).
+        text = await asyncio.to_thread(_extract_parser_text, path)
         written += _write_doc(target_dir, path, text, used)
 
     for file_path_str in classification.text_files:
         path = Path(file_path_str)
         try:
-            text = await FileTypeRouter.read_text_file(str(path))
+            text = await asyncio.to_thread(
+                FileTypeRouter.read_text_file, str(path)
+            )
         except Exception as exc:  # pragma: no cover - defensive
             logger.error("GraphRAG ingestion: failed to read text %s: %s", path.name, exc)
             text = ""

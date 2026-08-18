@@ -2935,5 +2935,19 @@
   "Quote source AI": "上方的 AI 回复",
   "Quote source user": "你上方的消息",
   "Quote intro": "【引用上文 · 来自{{source}}{{where}}】以下内容引自上方消息，请结合该消息的完整上下文来理解和继续：",
-  "Quote where": "第 {{n}} 条消息"
+  "Quote where": "第 {{n}} 条消息",
+  "Temporary questions": "临时提问",
+  "Ask temporary questions about this conversation": "对当前对话临时提问",
+  "References: {{title}}": "参考对话：{{title}}",
+  "References the current conversation": "参考当前对话",
+  "Start a new scratch conversation": "新开一个临时对话",
+  "Click again to confirm": "再点一次确认",
+  "New scratch conversation": "新开临时对话",
+  "Add this answer to the main conversation": "把这段回答加入主对话",
+  "Added to main chat": "已加入主对话",
+  "Add to main chat": "加入主对话",
+  "Ask about the main conversation…": "就主对话提问…",
+  "Temporary question input": "临时提问输入框",
+  "Ask anything about the main conversation here — it's read as reference, and this scratch chat stays out of your history.": "可在这里就主对话提问——AI 会把主对话作为参考阅读；这个临时对话不会出现在历史记录里。",
+  "Something went wrong.": "出了点问题。"
 }

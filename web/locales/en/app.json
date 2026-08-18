@@ -2935,5 +2935,19 @@
   "Quote source AI": "the AI reply above",
   "Quote source user": "your message above",
   "Quote intro": "[Quoted from above - from {{source}}{{where}}] The following is quoted from an earlier message; please understand it in the full context of that message and continue:",
-  "Quote where": "message #{{n}}"
+  "Quote where": "message #{{n}}",
+  "Temporary questions": "Temporary questions",
+  "Ask temporary questions about this conversation": "Ask temporary questions about this conversation",
+  "References: {{title}}": "References: {{title}}",
+  "References the current conversation": "References the current conversation",
+  "Start a new scratch conversation": "Start a new scratch conversation",
+  "Click again to confirm": "Click again to confirm",
+  "New scratch conversation": "New scratch conversation",
+  "Add this answer to the main conversation": "Add this answer to the main conversation",
+  "Added to main chat": "Added to main chat",
+  "Add to main chat": "Add to main chat",
+  "Ask about the main conversation…": "Ask about the main conversation…",
+  "Temporary question input": "Temporary question input",
+  "Ask anything about the main conversation here — it's read as reference, and this scratch chat stays out of your history.": "Ask anything about the main conversation here — it's read as reference, and this scratch chat stays out of your history.",
+  "Something went wrong.": "Something went wrong."
 }

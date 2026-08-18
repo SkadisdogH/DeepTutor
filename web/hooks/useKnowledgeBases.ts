@@ -110,16 +110,19 @@ export function useKnowledgeBases() {
         for (const kb of typedKbs) {
           const status = kb.status ?? kb.statistics?.status;
           const kbProgress = kb.progress ?? kb.statistics?.progress;
-          if (status === "error" && kbProgress) {
-            progress.setProgress(kb.name, kbProgress as ProgressInfo);
-            continue;
-          }
+          const serverStage = (kbProgress as ProgressInfo | undefined)?.stage;
           if (
             kbHasLiveProgress({ ...kb, progress: kbProgress as ProgressInfo })
           ) {
             progress.setProgress(kb.name, (kbProgress as ProgressInfo) ?? {});
             const taskId = (kbProgress as ProgressInfo | undefined)?.task_id;
             progress.subscribeWs(kb.name, taskId || undefined);
+          } else if (!serverStage || serverStage === "completed" || serverStage === "error") {
+            // Server says done (or has no progress record): drop any stale WS
+            // snapshot so display falls back to the server state and the 4s
+            // poll above stops. Without this, a WS dropped mid-indexing
+            // leaves a `processing_*` snapshot that never gets refreshed.
+            progress.clearProgress(kb.name);
           }
         }
       } catch (err) {
@@ -157,7 +160,18 @@ export function useKnowledgeBases() {
 
   const hasActiveWork = useMemo(
     () =>
-      combinedKbs.some((kb) => kbHasLiveProgress(kb)) ||
+      // Judge liveness from the SERVER-reported progress, not the live WS
+      // snapshot: a stale `progressByKb` entry (e.g. left behind when the WS
+      // dropped mid-index) would otherwise keep `kbHasLiveProgress` true
+      // forever and the 4s /list poll never stops (see docs/PITFALLS.md
+      // 「知识页面轮询 × inspect_kb_versions 全量解析 = CPU 空转回路」).
+      combinedKbs.some(
+        (kb) =>
+          kbHasLiveProgress({
+            ...kb,
+            progress: kb.progress ?? kb.statistics?.progress,
+          }),
+      ) ||
       Object.values(progress.tasksByKb).some((task) => task.executing),
     [combinedKbs, progress.tasksByKb],
   );

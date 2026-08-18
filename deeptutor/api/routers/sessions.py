@@ -77,14 +77,35 @@ def _format_quiz_results_message(answers: list[QuizResultItem]) -> str:
     return "\n".join(lines)
 
 
+def _filter_temporary_sessions(
+    sessions: list[dict[str, Any]], include_temporary: bool
+) -> list[dict[str, Any]]:
+    """Drop sessions flagged ``preferences.temporary`` (side-chat scratch
+    conversations) from a listing unless the caller explicitly asks for them.
+
+    The flag is written by ``TurnRuntimeManager.start_turn`` when the client
+    sends ``temporary: true``; filtering here keeps scratch conversations out
+    of every history listing while their full transcripts still resolve by id
+    (side-chat UI restores them via ``GET /sessions/{id}``).
+    """
+    if include_temporary:
+        return sessions
+    return [
+        s
+        for s in sessions
+        if not bool((s.get("preferences") or {}).get("temporary"))
+    ]
+
+
 @router.get("")
 async def list_sessions(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    include_temporary: bool = Query(default=False),
 ):
     store = get_session_store()
     sessions = await store.list_sessions(limit=limit, offset=offset)
-    return {"sessions": sessions}
+    return {"sessions": _filter_temporary_sessions(sessions, include_temporary)}
 
 
 # Cap (in characters) for a single event payload returned to the UI. RAG

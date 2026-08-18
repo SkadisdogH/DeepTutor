@@ -695,6 +695,11 @@ class TurnRuntimeManager:
 
     async def start_turn(self, payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         capability = str(payload.get("capability") or "chat")
+        # A "temporary" (side-chat) session is kept out of the normal
+        # session-history listing. The flag is persisted as a session
+        # preference so it sticks for the life of the session and every
+        # list endpoint can filter it consistently.
+        temporary_session = bool(payload.get("temporary"))
         if not payload.get("language"):
             from deeptutor.services.settings.interface_settings import (
                 get_response_language,
@@ -854,6 +859,8 @@ class TurnRuntimeManager:
         if mastery_path_explicit:
             # Like persona, an explicit empty string clears the association.
             preference_update["mastery_path_id"] = mastery_path_id
+        if temporary_session:
+            preference_update["temporary"] = True
         await self.store.update_session_preferences(session["id"], preference_update)
         turn = await self.store.create_turn(session["id"], capability=capability)
         execution = _TurnExecution(

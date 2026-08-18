@@ -83,6 +83,9 @@ export interface StartTurnMessage {
    *  attaches at this exact parent — creating a sibling rather than
    *  appending to the session tail. */
   parent_message_id?: number | null;
+  /** Side-chat marker: when true, the session is flagged ``temporary`` so it
+   *  is excluded from the normal session-history listing. */
+  temporary?: boolean;
 }
 
 export interface SubscribeTurnMessage {

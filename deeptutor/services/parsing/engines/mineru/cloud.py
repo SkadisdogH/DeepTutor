@@ -21,8 +21,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import io
+import json
 import logging
 from pathlib import Path
+import shutil
 import time
 import zipfile
 
@@ -46,6 +48,13 @@ _TERMINAL_FAIL = "failed"
 # Bounds for the extracted archive (defends a hostile/buggy CDN response).
 _MAX_TOTAL_BYTES = 500 * 1024 * 1024
 _MAX_ENTRIES = 5000
+
+# MinerU's cloud API rejects files above this page count ("number of pages
+# exceeds limit (200 pages)"). Keep a safety margin so a part never lands on
+# the boundary. PDFs larger than this are split into per-part uploads and the
+# parsed outputs are merged back into one working dir, transparently to the
+# caller (parse cache, IR loading and downstream consumers are unchanged).
+_CLOUD_MAX_PAGES = 190
 
 
 def parse_cloud(
@@ -87,6 +96,27 @@ def parse_cloud(
             on_progress(message)
         except Exception:
             logger.debug("on_progress callback failed", exc_info=True)
+
+    total_pages = _pdf_page_count(pdf_path)
+    if total_pages is not None and total_pages > _CLOUD_MAX_PAGES:
+        logger.info(
+            "MinerU cloud: %s has %d pages (>%d); splitting into parts",
+            pdf_path.name,
+            total_pages,
+            _CLOUD_MAX_PAGES,
+        )
+        return _parse_cloud_split(
+            pdf_path,
+            output_base,
+            config,
+            total_pages,
+            base_url=base_url,
+            headers=headers,
+            report=report,
+            poll_interval=poll_interval,
+            timeout=timeout,
+            on_progress=on_progress,
+        )
 
     with httpx.Client(base_url=base_url, headers=headers) as client:
         report(f"MinerU cloud: requesting upload slot for {pdf_path.name}")
@@ -338,6 +368,148 @@ def _extract_archive(archive_bytes: bytes, target_dir: Path) -> None:
                     out.write(src.read())
     except zipfile.BadZipFile as exc:
         raise MinerUError(f"MinerU returned an invalid archive: {exc}") from exc
+
+
+def _pdf_page_count(pdf_path: Path) -> int | None:
+    """Return the PDF page count, or ``None`` if no page-counting library is
+    available (caller then falls back to the single-upload path)."""
+    try:
+        import fitz  # PyMuPDF — already a runtime dep of the pymupdf4llm engine
+    except ImportError:
+        return None
+    try:
+        with fitz.open(pdf_path) as doc:
+            return doc.page_count
+    except Exception as exc:
+        logger.warning("MinerU cloud: could not count pages of %s: %s", pdf_path, exc)
+        return None
+
+
+def _split_pdf(
+    pdf_path: Path, out_dir: Path, max_pages: int
+) -> list[tuple[Path, int, int]]:
+    """Split ``pdf_path`` into ``max_pages``-sized parts.
+
+    Returns ``[(part_path, first_page_1based, last_page_1based), ...]``. Part
+    filenames embed the original stem so the parsed artifacts (markdown,
+    content list, images) stay name-unique across parts.
+    """
+    import fitz
+
+    doc = fitz.open(pdf_path)
+    total = doc.page_count
+    parts: list[tuple[Path, int, int]] = []
+    try:
+        for start in range(0, total, max_pages):
+            end = min(start + max_pages, total)
+            out = out_dir / f"{pdf_path.stem}_part{len(parts) + 1:03d}.pdf"
+            part = fitz.open()
+            try:
+                part.insert_pdf(doc, from_page=start, to_page=end - 1)
+                part.save(out, garbage=3, deflate=True)
+            finally:
+                part.close()
+            parts.append((out, start + 1, end))
+    finally:
+        doc.close()
+    return parts
+
+
+def _merge_parts(part_dirs: list[Path], working_dir: Path, stem: str) -> Path:
+    """Merge per-part MinerU outputs (markdown + content_list + images/) into
+    one working dir laid out exactly like a single-upload result.
+
+    ``load_ir`` only reads the *first* ``*.md`` and the first
+    ``*_content_list.json`` under the content dir, so the parts are merged —
+    not placed side by side. Images are copied into ``images/``; their names
+    embed the part filename, so collisions across parts cannot occur.
+    """
+    _reset_dir(working_dir)
+    images_dir = working_dir / "images"
+    md_parts: list[str] = []
+    blocks_all: list[dict] = []
+    for idx, part_dir in enumerate(part_dirs, 1):
+        md_files = sorted(part_dir.rglob("*.md"))
+        if md_files:
+            md_parts.append(
+                f"<!-- MinerU cloud part {idx} -->\n"
+                + md_files[0].read_text(encoding="utf-8")
+            )
+        json_files = sorted(part_dir.rglob("*_content_list.json"))
+        if json_files:
+            try:
+                data = json.loads(json_files[0].read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    blocks_all.extend(item for item in data if isinstance(item, dict))
+            except Exception as exc:
+                logger.warning("MinerU cloud: failed to merge content_list part %d: %s", idx, exc)
+        for img in sorted(part_dir.rglob("images/*")):
+            if img.is_file():
+                images_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(img, images_dir / img.name)
+    if md_parts:
+        (working_dir / f"{stem}.md").write_text(
+            "\n\n".join(md_parts), encoding="utf-8"
+        )
+    if blocks_all:
+        (working_dir / f"{stem}_content_list.json").write_text(
+            json.dumps(blocks_all, ensure_ascii=False), encoding="utf-8"
+        )
+    return working_dir
+
+
+def _parse_cloud_split(
+    pdf_path: Path,
+    output_base: Path,
+    config: MinerUConfig,
+    total_pages: int,
+    *,
+    base_url: str,
+    headers: dict,
+    report: Callable[[str], None],
+    poll_interval: float,
+    timeout: float,
+    on_progress: Callable[[str], None] | None,
+) -> Path:
+    """Split a >``_CLOUD_MAX_PAGES`` PDF into parts, parse each via the cloud
+    API and merge the outputs into ``output_base / pdf_path.stem``."""
+    parts_dir = output_base / f"._split_{pdf_path.stem}"
+    _reset_dir(parts_dir)
+    try:
+        parts = _split_pdf(pdf_path, parts_dir, _CLOUD_MAX_PAGES)
+        report(
+            f"MinerU cloud: {pdf_path.name} has {total_pages} pages; "
+            f"splitting into {len(parts)} parts (max {_CLOUD_MAX_PAGES} pages each)"
+        )
+        part_dirs: list[Path] = []
+        with httpx.Client(base_url=base_url, headers=headers) as client:
+            for idx, (part, first, last) in enumerate(parts, 1):
+                report(
+                    f"MinerU cloud: part {idx}/{len(parts)} "
+                    f"(pages {first}-{last}) requesting upload slot"
+                )
+                batch_id, upload_url = _request_upload(client, part, config)
+                size_mb = part.stat().st_size / (1024 * 1024)
+                report(f"MinerU cloud: part {idx}/{len(parts)} uploading ({size_mb:.1f} MB)")
+                _upload_file(part, upload_url)
+                zip_url = _poll_for_zip(
+                    client,
+                    batch_id,
+                    part.name,
+                    poll_interval=poll_interval,
+                    timeout=timeout,
+                    on_progress=on_progress,
+                )
+                report(f"MinerU cloud: part {idx}/{len(parts)} downloading result archive")
+                archive_bytes = _download(zip_url)
+                part_dir = parts_dir / f"out_{idx}"
+                _extract_archive(archive_bytes, part_dir)
+                part_dirs.append(part_dir)
+
+        report("MinerU cloud: merging parsed parts")
+        return _merge_parts(part_dirs, output_base / pdf_path.stem, pdf_path.stem)
+    finally:
+        shutil.rmtree(parts_dir, ignore_errors=True)
 
 
 __all__ = ["parse_cloud", "verify_credentials"]

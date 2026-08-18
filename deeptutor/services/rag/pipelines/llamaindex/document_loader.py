@@ -11,6 +11,7 @@ into the multimodal ``ImageNode`` path below.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from dataclasses import dataclass
 import logging
@@ -67,14 +68,21 @@ class LlamaIndexDocumentLoader:
         for file_path_str in classification.parser_files:
             file_path = Path(file_path_str)
             self.logger.info(f"Parsing document: {file_path.name}")
-            text, extracted_images = self._parse_document(file_path)
+            # Parsing is CPU-bound (pymupdf4llm/MinerU/...) and would otherwise
+            # freeze the event loop for the whole batch while awaited from a
+            # BackgroundTasks entry (#777 family) — keep it off the loop.
+            text, extracted_images = await asyncio.to_thread(
+                self._parse_document, file_path
+            )
             self._append_if_nonempty(documents, file_path, text)
             image_sources.extend(extracted_images)
 
         for file_path_str in classification.text_files:
             file_path = Path(file_path_str)
             self.logger.info(f"Parsing text: {file_path.name}")
-            text = await FileTypeRouter.read_text_file(str(file_path))
+            text = await asyncio.to_thread(
+                FileTypeRouter.read_text_file, str(file_path)
+            )
             self._append_if_nonempty(documents, file_path, text)
 
         for file_path_str in classification.image_files:
@@ -175,7 +183,10 @@ class LlamaIndexDocumentLoader:
         contents = []
         for source in sources:
             try:
-                image_payload = self._load_image_payload(source.path)
+                # base64-encoding a page image is CPU work; keep off the loop.
+                image_payload = await asyncio.to_thread(
+                    self._load_image_payload, source.path
+                )
                 description = await self._describe_image(
                     source.path,
                     image_payload["base64"],

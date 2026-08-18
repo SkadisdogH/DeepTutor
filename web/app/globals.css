@@ -825,6 +825,11 @@ body[data-picker-open] .dt-mark-pulse {
   .chat-preview-shell[data-preview-open="false"][data-viewer-open="true"] {
     padding-right: min(var(--viewer-width, 620px), 92vw);
   }
+  /* Side-chat scratch drawer — narrowest right-side panel; only squeezes
+     when neither the preview drawer nor the viewer panel is open. */
+  .chat-preview-shell[data-preview-open="false"][data-viewer-open="false"][data-scratch-open="true"] {
+    padding-right: min(400px, 92vw);
+  }
 }
 
 /* Sidebar tooltip */

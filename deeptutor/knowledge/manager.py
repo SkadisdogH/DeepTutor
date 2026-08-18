@@ -40,7 +40,6 @@ from deeptutor.services.rag.factory import (
 from deeptutor.services.rag.file_routing import FileTypeRouter
 from deeptutor.services.rag.index_probe import (
     inspect_kb_versions,
-    inspect_provider_version,
     provider_failure_summary,
 )
 
@@ -140,9 +139,6 @@ def _reconcile_embedding_flags(knowledge_bases: dict, base_dir: Path | None = No
     Returns ``True`` when any entry changed.
     """
     from deeptutor.services.rag.embedding_signature import signature_from_embedding_config
-    from deeptutor.services.rag.index_versioning import (
-        find_matching_version,
-    )
 
     fp = _get_embedding_fingerprint()
     signature = signature_from_embedding_config()
@@ -182,11 +178,18 @@ def _reconcile_embedding_flags(knowledge_bases: dict, base_dir: Path | None = No
 
         kb_dir = (base_dir / kb_name) if base_dir is not None else None
         matched = False
+        versions: list[dict[str, Any]] = []
         if kb_dir is not None and signature is not None:
-            matched_entry = find_matching_version(kb_dir, signature)
-            matched = (
-                matched_entry is not None
-                and inspect_provider_version(matched_entry, DEFAULT_PROVIDER).ready
+            # Reuse the memoized probe (inspect_kb_versions) instead of a raw
+            # list_kb_versions + per-version probe: the per-version probe
+            # re-parses every index store (88MB docstore.json ≈ 0.5s of
+            # event-loop CPU) on EVERY config load — and /list calls
+            # _load_config on every poll.
+            versions = inspect_kb_versions(kb_dir, provider)
+            target = signature.hash()
+            matched = any(
+                entry.get("signature") == target and entry.get("ready")
+                for entry in versions
             )
 
         if matched:
@@ -202,7 +205,7 @@ def _reconcile_embedding_flags(knowledge_bases: dict, base_dir: Path | None = No
             # Refresh the surfaced version list either way so the UI sees
             # accurate state.
             if kb_dir is not None:
-                kb_entry["index_versions"] = inspect_kb_versions(kb_dir, provider)
+                kb_entry["index_versions"] = versions
             continue
 
         # No matching ready index version on disk.
@@ -1162,8 +1165,15 @@ class KnowledgeBaseManager:
         if dir_exists:
             index_versions = inspect_kb_versions(kb_dir, rag_provider)
             has_ready_provider = any(bool(version.get("ready")) for version in index_versions)
+        # Reuse the probe above — a second inspect_kb_versions() call here
+        # would re-parse every index store (an 88MB docstore.json on the
+        # Math KB measured ~0.5s of synchronous event-loop CPU per pass).
         provider_error_summary = (
-            provider_failure_summary(kb_dir, rag_provider) if dir_exists else ""
+            provider_failure_summary(
+                kb_dir, rag_provider, versions=index_versions if dir_exists else None
+            )
+            if dir_exists
+            else ""
         )
 
         # For old KBs without status field, determine status from rag_storage
@@ -1290,24 +1300,22 @@ class KnowledgeBaseManager:
 
         # Check rag_initialized from provider-owned real output, not metadata alone.
         from deeptutor.services.rag.embedding_signature import signature_from_embedding_config
-        from deeptutor.services.rag.index_versioning import (
-            find_matching_version,
-        )
 
         kb_probe_dir = kb_dir if dir_exists else None
         rag_initialized = has_ready_provider
 
         active_signature = signature_from_embedding_config()
         if provider_uses_embedding_versions(rag_provider):
-            matched_entry = (
-                find_matching_version(kb_probe_dir, active_signature)
-                if (kb_probe_dir and active_signature)
-                else None
-            )
-            active_match = (
-                inspect_provider_version(matched_entry, rag_provider).ready
-                if matched_entry
-                else False
+            # Match against the ALREADY-probed (memoized) version list instead
+            # of a second raw probe: inspect_provider_version here re-parsed
+            # every index store (88MB docstore.json ≈ 0.5s) on EVERY /list.
+            target = active_signature.hash() if (kb_probe_dir and active_signature) else None
+            active_match = bool(
+                target
+                and any(
+                    entry.get("signature") == target and entry.get("ready")
+                    for entry in index_versions
+                )
             )
         else:
             active_match = rag_initialized

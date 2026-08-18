@@ -23,6 +23,7 @@ import {
   GraduationCap,
   Image as ImageIcon,
   Lightbulb,
+  MessageCircleQuestion,
   MessageSquare,
   Microscope,
   PenLine,
@@ -39,6 +40,7 @@ import { ChatMessageList } from "@/components/chat/home/ChatMessages";
 import { TurnNavigator } from "@/components/chat/home/TurnNavigator";
 import OverlayScrollbar from "@/components/chat/home/OverlayScrollbar";
 import SessionLoadingView from "@/components/chat/home/SessionLoadingView";
+import SideChatPanel from "@/components/chat/sidechat/SideChatPanel";
 // Imported eagerly so the drawer shell is always mounted off-screen —
 // clicking a chip becomes a single CSS class flip, no chunk fetch + double
 // render. The heavy renderers inside still load lazily.
@@ -436,6 +438,8 @@ export default function ChatPage() {
       return next;
     });
   }, []);
+  // 右侧「临时提问」抽屉:与主对话并存的临时问答区(见 SideChatPanel)。
+  const [sideChatOpen, setSideChatOpen] = useState(false);
   /**
    * Force the panel open on its Activity home. Used by the send-gate when the
    * user tries to send while the active capability still needs its config
@@ -1903,6 +1907,7 @@ export default function ChatPage() {
           // hand-tune it without fighting Tailwind's arbitrary-value parser.
           data-preview-open={previewSource ? "true" : "false"}
           data-viewer-open={viewerPanelOpen ? "true" : "false"}
+          data-scratch-open={sideChatOpen ? "true" : "false"}
           className="chat-preview-shell flex h-full flex-col overflow-hidden bg-[var(--background)]"
         >
           <div className="mx-auto flex w-full max-w-[960px] flex-wrap items-center justify-between gap-x-3 gap-y-1.5 px-6 pt-3 pb-0">
@@ -1968,6 +1973,13 @@ export default function ChatPage() {
                 icon={PanelRight}
                 label={t("Activity")}
                 title={t("Session activity, attachments & previews")}
+              />
+              <HeaderActionButton
+                onClick={() => setSideChatOpen((prev) => !prev)}
+                active={sideChatOpen}
+                icon={MessageCircleQuestion}
+                label={t("Temporary questions")}
+                title={t("Ask temporary questions about this conversation")}
               />
             </div>
           </div>
@@ -2202,6 +2214,12 @@ export default function ChatPage() {
             configSection={capabilityConfigSection}
             onClose={() => setViewerOpen(false)}
             onAutoOpen={() => setViewerOpen(true)}
+          />
+          <SideChatPanel
+            open={sideChatOpen}
+            onClose={() => setSideChatOpen(false)}
+            mainSessionId={state.sessionId || sessionIdParam}
+            mainSessionTitle={displaySessionTitle}
           />
         </div>
       </GeogebraTabProvider>

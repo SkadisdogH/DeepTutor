@@ -171,6 +171,17 @@ export async function listKnowledgeBases(options?: { force?: boolean }) {
       const response = await apiFetch(apiUrl("/api/v1/knowledge/list"), {
         cache: "no-store",
       });
+      if (!response.ok) {
+        // Non-JSON bodies (proxy 502/504, HTML error pages) previously
+        // exploded into `SyntaxError: Unexpected token '<'...` banners on
+        // every 4s poll while the backend event loop was saturated.
+        throw new Error(
+          await readErrorDetail(
+            response,
+            `Failed to load knowledge bases (${response.status})`,
+          ),
+        );
+      }
       const data = await response.json();
       return Array.isArray(data)
         ? data
@@ -194,6 +205,14 @@ export async function listRagProviders(options?: { force?: boolean }) {
           cache: "no-store",
         },
       );
+      if (!response.ok) {
+        throw new Error(
+          await readErrorDetail(
+            response,
+            `Failed to load RAG providers (${response.status})`,
+          ),
+        );
+      }
       const data = await response.json();
       return Array.isArray(data?.providers) ? data.providers : [];
     },
@@ -213,6 +232,14 @@ export async function getKnowledgeUploadPolicy(options?: { force?: boolean }) {
           cache: "no-store",
         },
       );
+      if (!response.ok) {
+        throw new Error(
+          await readErrorDetail(
+            response,
+            `Failed to load upload policy (${response.status})`,
+          ),
+        );
+      }
       const data = await response.json();
       return normalizeUploadPolicy(data);
     },

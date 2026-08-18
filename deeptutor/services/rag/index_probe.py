@@ -35,6 +35,54 @@ class ProviderIndexProbe:
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
+# ── filesystem-snapshot memoization ────────────────────────────────
+#
+# ``inspect_kb_versions`` re-reads every provider index artifact (a
+# llama_index docstore.json can be 10s of MB with tens of thousands of
+# nodes). Knowledge pages poll ``/list`` every few seconds while any work
+# looks active, so without memoization each poll re-parses the whole index
+# synchronously on the event loop — measured ~1s/request against the 88MB
+# Math KB docstore, i.e. a self-sustaining ~40% single-core idle burn
+# (see docs/PITFALLS.md §空转回路).
+#
+# The memo is keyed on a cheap filesystem snapshot (every file under the
+# KB dir: relpath + mtime_ns + size). Any real index write changes those
+# bytes, so the cache invalidates itself automatically — no explicit
+# invalidation call sites to forget. Snapshot construction is a shallow
+# rglob (~milliseconds), many orders cheaper than re-parsing the stores.
+_INSPECT_CACHE: dict[
+    tuple[str, str | None], tuple[tuple[tuple[str, int, int], ...], list[dict[str, Any]]]
+] = {}
+
+
+def _inspect_snapshot(kb_dir: Path) -> tuple[tuple[str, int, int], ...]:
+    snapshot: list[tuple[str, int, int]] = []
+    try:
+        for path in sorted(kb_dir.rglob("*")):
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            snapshot.append((str(path.relative_to(kb_dir)), stat.st_mtime_ns, stat.st_size))
+    except OSError:
+        return ()
+    return tuple(snapshot)
+
+
+def clear_kb_inspect_cache(kb_dir: str | Path | None = None) -> None:
+    """Drop memoized probes (all KBs, or just one KB dir when given).
+
+    Test seam and recovery hatch; production reads invalidate themselves via
+    the filesystem snapshot, so callers normally never need this.
+    """
+    target = str(kb_dir) if kb_dir is not None else None
+    for key in list(_INSPECT_CACHE):
+        if target is None or key[0] == target:
+            del _INSPECT_CACHE[key]
+
+
 def inspect_provider_index(
     provider: str | None, storage_dir: str | Path | None
 ) -> ProviderIndexProbe:
@@ -73,11 +121,23 @@ def inspect_provider_version(entry: dict[str, Any], provider: str | None) -> Pro
 
 
 def inspect_kb_versions(kb_dir: str | Path, provider: str | None) -> list[dict[str, Any]]:
-    """Return version entries annotated with provider-probe readiness."""
+    """Return version entries annotated with provider-probe readiness.
+
+    Memoized on a filesystem snapshot of ``kb_dir``: unchanged files return
+    the previous result (shallow-copied so callers cannot poison the cache);
+    any index write changes file mtime/size and forces a fresh probe.
+    """
     from deeptutor.services.rag.index_versioning import list_kb_versions
 
+    dir_path = Path(kb_dir)
+    key = (str(dir_path), normalize_provider_name(provider))
+    snapshot = _inspect_snapshot(dir_path)
+    cached = _INSPECT_CACHE.get(key)
+    if cached is not None and cached[0] == snapshot:
+        return [dict(entry) for entry in cached[1]]
+
     versions: list[dict[str, Any]] = []
-    for entry in list_kb_versions(Path(kb_dir)):
+    for entry in list_kb_versions(dir_path):
         adjusted = dict(entry)
         probe = inspect_provider_version(adjusted, provider)
         adjusted["ready"] = probe.ready
@@ -88,7 +148,9 @@ def inspect_kb_versions(kb_dir: str | Path, provider: str | None) -> list[dict[s
         if probe.diagnostics:
             adjusted["probe_diagnostics"] = probe.diagnostics
         versions.append(adjusted)
-    return versions
+
+    _INSPECT_CACHE[key] = (snapshot, versions)
+    return [dict(entry) for entry in versions]
 
 
 def latest_ready_provider_version(
@@ -111,10 +173,16 @@ def provider_failure_summary(
     provider: str | None,
     *,
     limit: int = 3,
+    versions: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Return the first provider-specific failure summary under ``kb_dir``."""
+    """Return the first provider-specific failure summary under ``kb_dir``.
+
+    ``versions`` may carry a probe result obtained by an earlier
+    ``inspect_kb_versions`` call (sharing one scan instead of re-probing).
+    """
+    entries = versions if versions is not None else inspect_kb_versions(kb_dir, provider)
     failures: list[str] = []
-    for entry in inspect_kb_versions(kb_dir, provider):
+    for entry in entries:
         summary = str(entry.get("failure_summary") or "").strip()
         if summary:
             failures.append(summary)
@@ -267,6 +335,7 @@ __all__ = [
     "inspect_provider_index",
     "inspect_provider_version",
     "inspect_kb_versions",
+    "clear_kb_inspect_cache",
     "latest_ready_provider_version",
     "has_ready_provider_index",
     "provider_failure_summary",

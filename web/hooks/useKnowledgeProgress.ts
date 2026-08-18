@@ -110,6 +110,11 @@ export function useKnowledgeProgress(options?: UseKnowledgeProgressOptions) {
           const stage = progress.stage;
           if (stage === "completed" || stage === "error") {
             closeSocket(kbName);
+            // Drop the terminal snapshot: a completed/error WS state must not
+            // linger in `progressByKb` — it merges at higher priority than
+            // server progress and would keep the 4s /list poll alive forever
+            // after a dropped connection (see docs/PITFALLS.md 空转回路).
+            clearProgress(kbName);
             onCompleteRef.current?.(kbName);
           }
         } catch {
@@ -122,7 +127,7 @@ export function useKnowledgeProgress(options?: UseKnowledgeProgressOptions) {
         delete socketsRef.current[kbName];
       };
     },
-    [closeSocket, setProgress],
+    [clearProgress, closeSocket, setProgress],
   );
 
   const openTaskStream = useCallback(

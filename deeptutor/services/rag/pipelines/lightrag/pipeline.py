@@ -97,7 +97,9 @@ class LightRagPipeline:
             io_bridge.raise_if_cancelled()
             path = Path(file_path)
             try:
-                doc = parse_service.parse(path)
+                # Parsing is CPU-bound; keep it off the event loop (same
+                # pattern as the llamaindex document loader).
+                doc = await asyncio.to_thread(parse_service.parse, path)
             except ParserError as exc:
                 self.logger.warning("LightRAG: parse failed for %s: %s", path.name, exc)
                 continue
