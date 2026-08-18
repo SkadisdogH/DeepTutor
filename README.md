@@ -46,6 +46,18 @@
 
 > 🤝 **We welcome any kinds of contributing!** Vote on roadmap items or propose new ones at [`Roadmap`](https://github.com/HKUDS/DeepTutor/issues/498), and see our [Contributing Guide](CONTRIBUTING.md) for branching strategy, coding standards, and how to get started.
 
+## 🔀 本 Fork 新增（Fork Additions）
+
+> 本仓库是 HKUDS/DeepTutor 的 **fork**，在官方版本之上面向「数学研究」场景叠加增强。
+> 完整清单（真实验证过的差异）见 **[FORK_ADDITIONS.md](./FORK_ADDITIONS.md)**，要点：
+
+- 🧮 **`math_research` 数学研究能力**（自动注册、开箱即用）+ **`math_symbolic`** SymPy 符号验证工具
+- 🧠 内置 skills：`math-conjecture` / `math-symbolic-check` / `math-lit-review`
+- 👤 **`math-research-tutor`** 数学研究导师人设预设
+- 💬 **SideChat 临时提问**抽屉（不污染历史列表）+ 消息选中→引用/加入对话 + 自定义滚动条
+- 📚 `add_to_kb` 工具、分块上传 + 内容哈希去重、KB 索引探测记忆化缓存（修复 ~40% 单核空转）、MinerU 大 PDF 拆分解析
+- 🛡️ 真实 provider 错误透传、流式优先（适配仅流式网关）、上下文窗口探测修复
+
 ### 📦 Releases
 
 > **[2026.8.10]** [v1.5.11](https://github.com/HKUDS/DeepTutor/releases/tag/v1.5.11) — Prose around a DSML tool call stops vanishing, a truncated reply continues instead of ending, live memory usage in Settings, and LightRAG indexing off the event loop.
